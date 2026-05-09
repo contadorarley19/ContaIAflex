@@ -1,4 +1,5 @@
 exports.handler = async (event) => {
+  // CORS headers
   const headers = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "Content-Type",
@@ -6,11 +7,23 @@ exports.handler = async (event) => {
     "Content-Type": "application/json",
   };
 
-  if (event.httpMethod === "OPTIONS") return { statusCode:200, headers, body:"" };
+  // Preflight
+  if (event.httpMethod === "OPTIONS") {
+    return { statusCode: 200, headers, body: "" };
+  }
+
+  if (event.httpMethod !== "POST") {
+    return { statusCode: 405, headers, body: JSON.stringify({ error: "Method Not Allowed" }) };
+  }
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    return { statusCode: 500, headers, body: JSON.stringify({ error: "API key not configured" }) };
+  }
 
   try {
+    const body = JSON.parse(event.body);
+
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
@@ -18,17 +31,21 @@ exports.handler = async (event) => {
         "x-api-key": apiKey,
         "anthropic-version": "2023-06-01",
       },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 10,
-        messages: [{ role: "user", content: "di hola" }]
-      }),
+      body: JSON.stringify(body),
     });
 
     const text = await response.text();
-    return { statusCode: 200, headers, body: JSON.stringify({ status: response.status, respuesta: text }) };
 
+    return {
+      statusCode: response.status,
+      headers,
+      body: text,
+    };
   } catch (error) {
-    return { statusCode: 200, headers, body: JSON.stringify({ error: error.message }) };
+    return {
+      statusCode: 500,
+      headers,
+      body: JSON.stringify({ error: error.message }),
+    };
   }
 };
