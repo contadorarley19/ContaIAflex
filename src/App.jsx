@@ -283,7 +283,7 @@ function exportarExcel(facturas, config, soloUna=null) {
     generarFilasContables(f,cons,config).forEach(r=>rows.push(headers.map(h=>r[h]??"")));
     cons++;
   });
-  const csv = rows.map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(",")).join("\n");
+  const csv = "sep=,\n" + rows.map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}`).join(",")).join("\n");
   const a = document.createElement("a");
   a.href = "data:text/csv;charset=utf-8,%EF%BB%BF"+encodeURIComponent(csv);
   a.download = soloUna ? `comprobante_${soloUna.prefijo||soloUna.nitProveedor}.csv` : `comprobante_${config.tpcCod}_${config.docNumInicio}.csv`;
