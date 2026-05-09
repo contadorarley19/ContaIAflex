@@ -206,7 +206,7 @@ async function parsePDFFactura(archivo) {
     r.readAsDataURL(archivo);
   });
   const data = await callClaude({
-    model:"claude-sonnet-4-20250514", max_tokens:1500,
+    model:"claude-sonnet-4-5", max_tokens:1500,
     messages:[{role:"user",content:[
       {type:"document",source:{type:"base64",media_type:"application/pdf",data:base64}},
       {type:"text",text:`Lee esta factura y extrae los datos. Responde SOLO JSON sin markdown.
@@ -252,7 +252,7 @@ JSON:
 {"concepto_general":"","tipo_cuenta":"Inventario|Costo|Gasto","retefuente_pct":0,"retefuente_descripcion":"","cuenta_retefuente_codigo":"","cuenta_retefuente_nombre":"","retica_por_mil":0,"advertencia_puc":"","cuenta_iva_codigo":"","cuenta_iva_nombre":"","lineas_contables":[{"descripcion":"","cantidad":1,"valor_base":0,"cuenta_debito_codigo":"","cuenta_debito_nombre":"","sin_cuenta_exacta":false}]}`;
 
   const data = await callClaude({
-    model:"claude-sonnet-4-20250514", max_tokens:2000,
+    model:"claude-sonnet-4-5", max_tokens:2000,
     messages:[{role:"user",content:prompt}],
   });
   const text = data.content?.map(b=>b.text||"").join("").replace(/```json|```/g,"").trim();
