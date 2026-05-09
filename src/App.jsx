@@ -1,7 +1,7 @@
 import { useState, useCallback } from "react";
 
 const API_URL = "https://api.anthropic.com/v1/messages";
-const API_KEY = "sk-ant-TUKEY..."; // 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;
+const API_KEY = "TU_API_KEY_AQUI"; // reemplaza con tu sk-ant-...
 
 const PUC_EMPRESA = `plncod	plnnom
 1	ACTIVO
@@ -186,8 +186,12 @@ function parseXMLFactura(xmlText) {
 
 async function callClaude(body) {
   const res = await fetch(API_URL, {
-    method:"POST",
-    headers:{"Content-Type":"application/json"},
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": API_KEY,
+      "anthropic-version": "2023-06-01",
+    },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
