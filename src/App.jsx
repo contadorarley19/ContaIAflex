@@ -531,7 +531,7 @@ function FacturaCard({ f, idx, onUpdate, docNum }) {
     return fs.map(r=>r.id==="prov"&&!r.editadoManual?{...r,valor:Math.max(0,deb-cre)}:r);
   };
 
-  const updFila = (id,campo,valor) => { const n=recalcProv(filas.map(r=>r.id===id?{...r,[campo]:valor}:r)); setFilas(n); onUpdate(f.id,"asiento",n); };
+  const updFila = (id,campo,valor) => { const n=recalcProv(filas.map(r=>r.id===id?{...r,[campo]:valor,editadoManual:id==="prov"?true:r.editadoManual}:r)); setFilas(n); onUpdate(f.id,"asiento",n); };
   const elimFila = id => { const n=recalcProv(filas.filter(r=>r.id!==id)); setFilas(n); onUpdate(f.id,"asiento",n); };
   const addFila = () => {
     const n=recalcProv([...filas.filter(r=>r.id!=="prov"),{id:`x${Date.now()}`,tipo:"debito",descripcion:"Nueva línea",valor:0,cuenta:"",editable:true,eliminable:true,advertencia:true},...filas.filter(r=>r.id==="prov")]);
