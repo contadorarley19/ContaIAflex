@@ -1,6 +1,17 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 
 const API_URL = "/.netlify/functions/claude";
+
+// Carga SheetJS para exportar xlsx nativo
+function cargarSheetJS() {
+  return new Promise((resolve) => {
+    if (window.XLSX) { resolve(window.XLSX); return; }
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+    s.onload = () => resolve(window.XLSX);
+    document.head.appendChild(s);
+  });
+}
 
 const PUC_EMPRESA = `plncod	plnnom
 11050501	Caja general
@@ -272,22 +283,43 @@ function generarFilasContables(factura, docNum, config) {
   return filas;
 }
 
-function exportarExcel(facturas, config, soloUna=null) {
-  // Orden por fecha: la factura más antigua recibe el DocNum más bajo
+async function exportarExcel(facturas, config, soloUna=null) {
+  const XLSX = await cargarSheetJS();
+
   const lista = [...(soloUna ? [soloUna] : facturas.filter(f=>f.aprobado&&!f.error))]
     .sort((a,b)=>(a.fecha||"").localeCompare(b.fecha||""));
+
   const headers = ["DocNum","DocFec","TpcCod","PlnCod","DocDet","TerNit","CtoCod","DocDeb","DocCre","PrfCod","DocAux","SubCto"];
-  const rows = [headers];
+  const wsData = [headers];
+
   let cons = parseInt(config.docNumInicio)||1;
   lista.forEach(f => {
-    generarFilasContables(f,cons,config).forEach(r=>rows.push(headers.map(h=>r[h]??"")));
+    generarFilasContables(f, cons, config).forEach(r => {
+      wsData.push(headers.map(h => {
+        const v = r[h]??"";
+        // DocDeb y DocCre como número cuando tienen valor
+        if ((h==="DocDeb"||h==="DocCre") && v!=="") return Number(v);
+        if (h==="DocNum") return Number(v)||v;
+        return String(v);
+      }));
+    });
     cons++;
   });
-  const csv = "sep=,\n" + rows.map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}`).join(";")).join("\n");
-  const a = document.createElement("a");
-  a.href = "data:text/csv;charset=utf-8,%EF%BB%BF"+encodeURIComponent(csv);
-  a.download = soloUna ? `comprobante_${soloUna.prefijo||soloUna.nitProveedor}.csv` : `comprobante_${config.tpcCod}_${config.docNumInicio}.csv`;
-  a.click();
+
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+  ws["!cols"] = [
+    {wch:8},{wch:12},{wch:8},{wch:12},{wch:45},
+    {wch:14},{wch:10},{wch:14},{wch:14},{wch:10},{wch:14},{wch:8},
+  ];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Comprobante");
+
+  const nombre = soloUna
+    ? `comprobante_${soloUna.prefijo||soloUna.nitProveedor}.xlsx`
+    : `comprobante_${config.tpcCod}_${config.docNumInicio}.xlsx`;
+
+  XLSX.writeFile(wb, nombre);
 }
 
 function CeldaEditable({ valor, onChange, tipo="text", style={} }) {
@@ -308,16 +340,25 @@ function CeldaEditable({ valor, onChange, tipo="text", style={} }) {
 function ModalExport({ facturas, onClose }) {
   const aprobadas = facturas.filter(f=>f.aprobado&&!f.error).sort((a,b)=>(a.fecha||"").localeCompare(b.fecha||""));
   const [cfg, setCfg] = useState({ docNumInicio:"1", tpcCod:"CO", prfCod:"", docAux:"", ctoCod:"" });
+  const [exportando, setExportando] = useState(false);
   const set = (k,v) => setCfg(p=>({...p,[k]:v}));
   const preview = aprobadas.map((f,i)=>({...f, docNumAsignado:(parseInt(cfg.docNumInicio)||1)+i}));
   const fmt = n => `$${Number(n||0).toLocaleString("es-CO")}`;
+
+  const handleExport = async (soloUna=null) => {
+    setExportando(true);
+    try { await exportarExcel(facturas, cfg, soloUna); }
+    catch(e) { alert("Error al exportar: "+e.message); }
+    finally { setExportando(false); }
+  };
+
   return (
     <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.88)",zIndex:2000,display:"flex",alignItems:"center",justifyContent:"center",padding:16,overflowY:"auto"}}>
       <div style={{background:"#161923",border:"1px solid #232840",borderRadius:16,padding:26,maxWidth:700,width:"100%"}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:18}}>
           <div>
             <div style={{fontFamily:"sans-serif",fontWeight:700,fontSize:16,color:"#fff"}}>⬇ Exportar comprobante contable</div>
-            <div style={{fontSize:11,color:"#64748b",marginTop:2}}>{aprobadas.length} facturas aprobadas · ordenadas por fecha</div>
+            <div style={{fontSize:11,color:"#64748b",marginTop:2}}>{aprobadas.length} facturas aprobadas · ordenadas por fecha · formato .xlsx</div>
           </div>
           <button onClick={onClose} style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",borderRadius:6,padding:"4px 10px",cursor:"pointer",fontSize:12}}>✕</button>
         </div>
@@ -367,19 +408,19 @@ function ModalExport({ facturas, onClose }) {
           </div>
         </div>
         <div style={{borderTop:"1px solid #1e2235",paddingTop:14,display:"flex",gap:10,flexWrap:"wrap",justifyContent:"flex-end",alignItems:"center"}}>
-          <div style={{fontSize:11,color:"#475569",flex:1}}>CSV compatible con Excel e importación contable</div>
+          <div style={{fontSize:11,color:"#475569",flex:1}}>Archivo .xlsx — se abre directo en Excel sin configurar nada</div>
           <div style={{display:"flex",flexDirection:"column",gap:5,maxHeight:130,overflowY:"auto",border:"1px solid #1e2235",borderRadius:6,padding:"6px 8px",minWidth:210}}>
             <div style={{fontSize:10,color:"#64748b",fontWeight:600,marginBottom:2}}>📄 Por factura:</div>
             {preview.map(f=>(
-              <button key={f.id} onClick={()=>exportarExcel(facturas,cfg,f)}
+              <button key={f.id} onClick={()=>handleExport(f)} disabled={exportando}
                 style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",borderRadius:5,padding:"3px 9px",cursor:"pointer",fontSize:10,textAlign:"left",whiteSpace:"nowrap"}}>
                 ⬇ {cfg.tpcCod}{f.docNumAsignado} · {f.razonSocial?.slice(0,18)}
               </button>
             ))}
           </div>
-          <button onClick={()=>exportarExcel(facturas,cfg)} disabled={aprobadas.length===0}
-            style={{background:aprobadas.length?"#4f7cff":"#1e2235",color:aprobadas.length?"#fff":"#475569",border:"none",borderRadius:8,padding:"10px 22px",cursor:aprobadas.length?"pointer":"not-allowed",fontSize:13,fontWeight:700}}>
-            ⬇ Descargar TODAS ({aprobadas.length})
+          <button onClick={()=>handleExport()} disabled={aprobadas.length===0||exportando}
+            style={{background:aprobadas.length&&!exportando?"#4f7cff":"#1e2235",color:aprobadas.length&&!exportando?"#fff":"#475569",border:"none",borderRadius:8,padding:"10px 22px",cursor:aprobadas.length&&!exportando?"pointer":"not-allowed",fontSize:13,fontWeight:700}}>
+            {exportando?"Generando...":"⬇ Descargar TODAS ("+aprobadas.length+")"}
           </button>
         </div>
       </div>
@@ -478,71 +519,43 @@ function FacturaCard({ f, idx, onUpdate, docNum }) {
     });
     let lcIdx = 0;
     mapaLineas.forEach((l, cta) => {
-      filas.push({
-        id:`lc${lcIdx++}`, tipo:"debito",
-        descripcion:l.descripcion, valor:l.valor_base,
-        cuenta:cta, editable:true, eliminable:true, advertencia:!!l.sin_cuenta_exacta
-      });
+      filas.push({ id:`lc${lcIdx++}`, tipo:"debito", descripcion:l.descripcion, valor:l.valor_base, cuenta:cta, editable:true, eliminable:true, advertencia:!!l.sin_cuenta_exacta });
     });
 
     // 2. IVA (DÉBITO)
     if ((f.totalIva||0) > 0 && f.ia.cuenta_iva_codigo) {
-      filas.push({
-        id:"iva", tipo:"debito",
-        descripcion:f.ia.cuenta_iva_nombre||"IVA",
-        valor:f.totalIva, cuenta:f.ia.cuenta_iva_codigo,
-        editable:true, eliminable:true, advertencia:false
-      });
+      filas.push({ id:"iva", tipo:"debito", descripcion:f.ia.cuenta_iva_nombre||"IVA", valor:f.totalIva, cuenta:f.ia.cuenta_iva_codigo, editable:true, eliminable:true, advertencia:false });
     }
 
     // 3. ReteFuente (CRÉDITO)
     if (!f.esAutorretenedor && (f.retefuente||0) > 0 && f.ia.cuenta_retefuente_codigo) {
-      filas.push({
-        id:"rete", tipo:"credito",
-        descripcion:f.ia.retefuente_descripcion||"Retención en la fuente",
-        valor:f.retefuente, cuenta:f.ia.cuenta_retefuente_codigo,
-        editable:true, eliminable:true, advertencia:false
-      });
+      filas.push({ id:"rete", tipo:"credito", descripcion:f.ia.retefuente_descripcion||"Retención en la fuente", valor:f.retefuente, cuenta:f.ia.cuenta_retefuente_codigo, editable:true, eliminable:true, advertencia:false });
     }
 
     // 4. ReteICA (CRÉDITO)
     if ((f.retica||0) > 0) {
-      filas.push({
-        id:"retica", tipo:"credito",
-        descripcion:"Retención industria y comercio",
-        valor:f.retica, cuenta:"13551801",
-        editable:true, eliminable:true, advertencia:false
-      });
+      filas.push({ id:"retica", tipo:"credito", descripcion:"Retención industria y comercio", valor:f.retica, cuenta:"13551801", editable:true, eliminable:true, advertencia:false });
     }
 
     // 5. Proveedor (CRÉDITO) — siempre al final, inicialmente automático
     const totalDeb = filas.filter(r=>r.tipo==="debito").reduce((s,r)=>s+r.valor,0);
     const totalCre = filas.filter(r=>r.tipo==="credito").reduce((s,r)=>s+r.valor,0);
-    const neto = Math.max(0, totalDeb - totalCre);
-    filas.push({
-      id:"prov", tipo:"credito",
-      descripcion:`Proveedor — ${(f.razonSocial||"").slice(0,40)}`,
-      valor:neto, cuenta:"22050101",
-      editable:true, eliminable:false, advertencia:false, editadoManual:false
-    });
+    filas.push({ id:"prov", tipo:"credito", descripcion:`Proveedor — ${(f.razonSocial||"").slice(0,40)}`, valor:Math.max(0,totalDeb-totalCre), cuenta:"22050101", editable:true, eliminable:false, advertencia:false, editadoManual:false });
 
     return filas;
   };
 
   const [filas, setFilas] = useState(() => f.asiento || construirAsiento());
 
-  // Recalcula proveedor automáticamente SOLO si no fue editado manualmente
   const recalcProv = (fs) => {
     const deb = fs.filter(r=>r.tipo==="debito").reduce((s,r)=>s+r.valor,0);
     const cre = fs.filter(r=>r.tipo==="credito"&&r.id!=="prov").reduce((s,r)=>s+r.valor,0);
     return fs.map(r=>r.id==="prov"&&!r.editadoManual?{...r,valor:Math.max(0,deb-cre)}:r);
   };
 
-  // Marca editadoManual cuando el usuario edita directamente la fila del proveedor
   const updFila = (id,campo,valor) => {
     const n=recalcProv(filas.map(r=>r.id===id?{...r,[campo]:valor,editadoManual:id==="prov"?true:r.editadoManual}:r));
-    setFilas(n);
-    onUpdate(f.id,"asiento",n);
+    setFilas(n); onUpdate(f.id,"asiento",n);
   };
   const elimFila = id => { const n=recalcProv(filas.filter(r=>r.id!==id)); setFilas(n); onUpdate(f.id,"asiento",n); };
   const addFila = () => {
@@ -579,7 +592,6 @@ function FacturaCard({ f, idx, onUpdate, docNum }) {
         {f.aprobado&&<span style={{background:"#14532d",color:"#86efac",borderRadius:20,padding:"2px 9px",fontSize:11,fontWeight:600}}>✓ Aprobado</span>}
         <div style={{marginLeft:"auto",display:"flex",gap:6}}>
           <button onClick={()=>setExpandido(e=>!e)} style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",borderRadius:6,padding:"3px 10px",cursor:"pointer",fontSize:11}}>{expandido?"▲":"▼ Asiento"}</button>
-          {/* Guarda el asiento en el estado global al aprobar */}
           <button onClick={()=>{ if(!cuadra){alert("El asiento está descuadrado. Revisa antes de aprobar.");return;} onUpdate(f.id,"asiento",filas); onUpdate(f.id,"aprobado",!f.aprobado); }}
             style={{background:f.aprobado?"#14532d":"#4f7cff",color:f.aprobado?"#86efac":"#fff",border:"none",borderRadius:6,padding:"3px 14px",cursor:"pointer",fontSize:11,fontWeight:700}}>
             {f.aprobado?"✓ Aprobado":"Aprobar"}
@@ -719,6 +731,9 @@ export default function App() {
   const [procesando, setProcesando]   = useState(false);
   const [modalExport, setModalExport] = useState(false);
   const [docNumInicio]                = useState("1");
+
+  // Pre-carga SheetJS al iniciar
+  useEffect(() => { cargarSheetJS(); }, []);
 
   const recibirArchivos = useCallback(lista => {
     const v = Array.from(lista).filter(f=>f.name.endsWith(".xml")||f.name.endsWith(".pdf"));
