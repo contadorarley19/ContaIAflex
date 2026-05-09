@@ -319,7 +319,7 @@ function ModalExport({ facturas, onClose }) {
             <div style={{fontFamily:"sans-serif",fontWeight:700,fontSize:16,color:"#fff"}}>⬇ Exportar comprobante contable</div>
             <div style={{fontSize:11,color:"#64748b",marginTop:2}}>{aprobadas.length} facturas aprobadas · ordenadas por fecha</div>
           </div>
-          <button onClick={onClose} style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",borderRadius:6,padding:"4px 10px",cursor:"pointer",fontSize:12}}>✕</button>
+          ={onClose} style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",borderRadius:6,padding:"4px 10px",cursor:"pointer",fontSize:12}}>✕</button>
         </div>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:11,marginBottom:18}}>
           {[
@@ -377,7 +377,7 @@ function ModalExport({ facturas, onClose }) {
               </button>
             ))}
           </div>
-          <button onClick={()=>exportarExcel(facturas,cfg)} disabled={aprobadas.length===0}
+          ={()=>exportarExcel(facturas,cfg)} disabled={aprobadas.length===0}
             style={{background:aprobadas.length?"#4f7cff":"#1e2235",color:aprobadas.length?"#fff":"#475569",border:"none",borderRadius:8,padding:"10px 22px",cursor:aprobadas.length?"pointer":"not-allowed",fontSize:13,fontWeight:700}}>
             ⬇ Descargar TODAS ({aprobadas.length})
           </button>
@@ -441,8 +441,8 @@ function ModalTratamiento({ archivos, onConfirm, onCancel }) {
           ✓ <strong>PUC integrado</strong> — la IA usará exclusivamente las cuentas de la empresa.
         </div>
         <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
-          <button onClick={onCancel} style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",padding:"8px 16px",borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:600}}>Cancelar</button>
-          <button onClick={()=>listo&&onConfirm(tratamiento,tratIva)} disabled={!listo}
+          ={onCancel} style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",padding:"8px 16px",borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:600}}>Cancelar</button>
+          ={()=>listo&&onConfirm(tratamiento,tratIva)} disabled={!listo}
             style={{background:listo?"#4f7cff":"#1e2235",color:listo?"#fff":"#475569",border:"none",padding:"8px 22px",borderRadius:6,cursor:listo?"pointer":"not-allowed",fontSize:13,fontWeight:700}}>
             {listo?"Procesar →":"Completa los 2 pasos"}
           </button>
@@ -566,8 +566,8 @@ function FacturaCard({ f, idx, onUpdate, docNum }) {
         {!cuadra&&<span style={{background:"#3b1f1f",color:"#f87171",border:"1px solid #7c3700",borderRadius:20,padding:"2px 9px",fontSize:11,fontWeight:600}}>⚡ Descuadrado</span>}
         {f.aprobado&&<span style={{background:"#14532d",color:"#86efac",borderRadius:20,padding:"2px 9px",fontSize:11,fontWeight:600}}>✓ Aprobado</span>}
         <div style={{marginLeft:"auto",display:"flex",gap:6}}>
-          <button onClick={()=>setExpandido(e=>!e)} style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",borderRadius:6,padding:"3px 10px",cursor:"pointer",fontSize:11}}>{expandido?"▲":"▼ Asiento"}</button>
-          <button onClick={()=>{ if(!cuadra){alert("El asiento está descuadrado. Revisa antes de aprobar.");return;} onUpdate(f.id,"aprobado",!f.aprobado); }}
+          ={()=>setExpandido(e=>!e)} style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",borderRadius:6,padding:"3px 10px",cursor:"pointer",fontSize:11}}>{expandido?"▲":"▼ Asiento"}</button>
+          {()=>{ if(!cuadra){alert("El asiento está descuadrado. Revisa antes de aprobar.");return;} onUpdate(f.id,"asiento",filas); onUpdate(f.id,"aprobado",!f.aprobado); }}
             style={{background:f.aprobado?"#14532d":"#4f7cff",color:f.aprobado?"#86efac":"#fff",border:"none",borderRadius:6,padding:"3px 14px",cursor:"pointer",fontSize:11,fontWeight:700}}>
             {f.aprobado?"✓ Aprobado":"Aprobar"}
           </button>
@@ -600,7 +600,7 @@ function FacturaCard({ f, idx, onUpdate, docNum }) {
             <div style={{fontSize:11,color:"#64748b",fontWeight:600,textTransform:"uppercase",letterSpacing:".07em"}}>✏️ Asiento editable</div>
             <div style={{display:"flex",gap:8,alignItems:"center"}}>
               <span style={{fontSize:11,color:cuadra?"#22c55e":"#f87171",fontWeight:600}}>{cuadra?"✓ Cuadrado":"⚡ Descuadrado"}</span>
-              {!f.aprobado&&<button onClick={addFila} style={{background:"transparent",border:"1px solid #2d3f6e",color:"#60a5fa",borderRadius:5,padding:"3px 9px",cursor:"pointer",fontSize:11}}>+ Línea</button>}
+              {!f.aprobado&&={addFila} style={{background:"transparent",border:"1px solid #2d3f6e",color:"#60a5fa",borderRadius:5,padding:"3px 9px",cursor:"pointer",fontSize:11}}>+ Línea</button>}
             </div>
           </div>
           <div style={{background:"#0d101a",borderRadius:7,overflow:"hidden",border:`1px solid ${cuadra?"#1e2235":"#7c3700"}`}}>
@@ -643,7 +643,7 @@ function FacturaCard({ f, idx, onUpdate, docNum }) {
                     </td>
                     <td style={{padding:"6px 9px",textAlign:"center"}}>
                       {!f.aprobado&&r.eliminable
-                        ? <button onClick={()=>elimFila(r.id)} style={{background:"transparent",border:"1px solid #3b1f1f",color:"#f87171",borderRadius:4,padding:"2px 7px",cursor:"pointer",fontSize:11}}>🗑</button>
+                        ? ={()=>elimFila(r.id)} style={{background:"transparent",border:"1px solid #3b1f1f",color:"#f87171",borderRadius:4,padding:"2px 7px",cursor:"pointer",fontSize:11}}>🗑</button>
                         : r.id==="prov" ? <span style={{fontSize:10,color:"#fbbf24"}}>auto</span>
                         : <span style={{fontSize:10,color:f.aprobado?"#22c55e":"#475569"}}>{f.aprobado?"🔒":""}</span>}
                     </td>
