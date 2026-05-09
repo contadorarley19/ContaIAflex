@@ -1,7 +1,6 @@
 import { useState, useCallback } from "react";
 
-const API_URL = "https://api.anthropic.com/v1/messages";
-const API_KEY = "TU_API_KEY_AQUI"; // reemplaza con tu sk-ant-...
+const API_URL = "/.netlify/functions/claude";
 
 const PUC_EMPRESA = `plncod	plnnom
 1	ACTIVO
@@ -187,11 +186,7 @@ function parseXMLFactura(xmlText) {
 async function callClaude(body) {
   const res = await fetch(API_URL, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": API_KEY,
-      "anthropic-version": "2023-06-01",
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
   if (!res.ok) {
