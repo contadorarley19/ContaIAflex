@@ -1,4 +1,23 @@
-import { useState, useCallback } from "react";
+import { useState, async function callClaude(body) {
+  const res = await fetch("https://contaiaflex.netlify.app/.netlify/functions/claude", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error(`HTTP ${res.status}: ${txt}`);
+  }
+
+  const data = await res.json();
+
+  if (data.error) {
+    throw new Error(data.error.message || JSON.stringify(data.error));
+  }
+
+  return data;
+} } from "react";
 
 const API_URL = "https://contaiaflex.netlify.app/.netlify/functions/claude";
 
