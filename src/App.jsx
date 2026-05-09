@@ -255,7 +255,9 @@ NUNCA pongas retenciones (23x) ni proveedores (22x) en débito.
 NUNCA pongas costos/gastos (6x, 5x) en crédito.
 
 JSON:
-{"concepto_general":"","tipo_cuenta":"Inventario|Costo|Gasto","retefuente_pct":0,"retefuente_descripcion":"","cuenta_retefuente_codigo":"","cuenta_retefuente_nombre":"","retica_por_mil":0,"advertencia_puc":"","cuenta_iva_codigo":"","cuenta_iva_nombre":"","lineas_contables":[{"descripcion":"","cantidad":1,"valor_base":0,"cuenta_debito_codigo":"","cuenta_debito_nombre":"","sin_cuenta_exacta":false}]}`;
+{"concepto_general":"","tipo_cuenta":"Inventario|Costo|Gasto","retefuente_pct":0,"retefuente_descripcion":"","cuenta_retefuente_codigo":"","cuenta_retefuente_nombre":"","retica_por_mil":0,"advertencia_puc":"","cuenta_iva_codigo":"","cuenta_iva_nombre":"","lineas_contables":[{"descripcion":"","cantidad":1,"valor_base":0,"cuenta_debito_codigo":"","cuenta_debito_nombre":"","sin_cuenta_exacta":false}]}
+
+IMPORTANTE: lineas_contables debe contener SOLO líneas de costo/gasto/inventario. NO incluyas cuentas 22x ni 23x en lineas_contables.`;
 
   const data = await callClaude({
     model:"claude-sonnet-4-5", max_tokens:2000,
