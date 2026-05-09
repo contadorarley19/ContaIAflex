@@ -206,7 +206,7 @@ async function parsePDFFactura(archivo) {
     r.readAsDataURL(archivo);
   });
   const data = await callClaude({
-    model:"claude-sonnet-4-5", max_tokens:1500,
+    model:"claude-sonnet-4-20250514", max_tokens:1500,
     messages:[{role:"user",content:[
       {type:"document",source:{type:"base64",media_type:"application/pdf",data:base64}},
       {type:"text",text:`Lee esta factura y extrae los datos. Responde SOLO JSON sin markdown.
@@ -248,11 +248,17 @@ RETENCIONES (usa solo cuentas del PUC):
 
 ${instrIva}
 
+REGLAS CONTABLES ESTRICTAS — NUNCA las violes:
+DÉBITO siempre: cuentas de costo (6x), gasto (5x), inventario/contratos (14x), IVA descontable (24081010), IVA al gasto (61157001, 61157002)
+CRÉDITO siempre: proveedores (22x), retenciones (23x), IVA por pagar (24x excepto 24081010)
+NUNCA pongas retenciones (23x) ni proveedores (22x) en débito.
+NUNCA pongas costos/gastos (6x, 5x) en crédito.
+
 JSON:
 {"concepto_general":"","tipo_cuenta":"Inventario|Costo|Gasto","retefuente_pct":0,"retefuente_descripcion":"","cuenta_retefuente_codigo":"","cuenta_retefuente_nombre":"","retica_por_mil":0,"advertencia_puc":"","cuenta_iva_codigo":"","cuenta_iva_nombre":"","lineas_contables":[{"descripcion":"","cantidad":1,"valor_base":0,"cuenta_debito_codigo":"","cuenta_debito_nombre":"","sin_cuenta_exacta":false}]}`;
 
   const data = await callClaude({
-    model:"claude-sonnet-4-5", max_tokens:2000,
+    model:"claude-sonnet-4-20250514", max_tokens:2000,
     messages:[{role:"user",content:prompt}],
   });
   const text = data.content?.map(b=>b.text||"").join("").replace(/```json|```/g,"").trim();
@@ -461,11 +467,13 @@ function FacturaCard({ f, idx, onUpdate, docNum }) {
   const asientoInicial = useCallback(() => {
     if (!f.ia) return [];
     const filas = [];
+    // DÉBITOS — costos, gastos, inventario, IVA
     f.ia.lineas_contables?.forEach((l,i)=>{
       filas.push({id:`lc${i}`,tipo:"debito",descripcion:l.descripcion,valor:l.valor_base,cuenta:l.cuenta_debito_codigo,editable:true,eliminable:true,advertencia:l.sin_cuenta_exacta});
     });
     if (f.totalIva>0 && f.ia.cuenta_iva_codigo)
       filas.push({id:"iva",tipo:"debito",descripcion:f.ia.cuenta_iva_nombre||"IVA",valor:f.totalIva,cuenta:f.ia.cuenta_iva_codigo,editable:true,eliminable:true,advertencia:false});
+    // CRÉDITOS — retenciones y proveedor
     if (!f.esAutorretenedor && (f.retefuente||0)>0 && f.ia.cuenta_retefuente_codigo)
       filas.push({id:"rete",tipo:"credito",descripcion:f.ia.retefuente_descripcion||"Retención en la fuente",valor:f.retefuente,cuenta:f.ia.cuenta_retefuente_codigo,editable:true,eliminable:true,advertencia:false});
     if ((f.retica||0)>0)
