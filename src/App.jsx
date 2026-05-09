@@ -469,9 +469,11 @@ function FacturaCard({ f, idx, onUpdate, docNum }) {
     const filas = [];
     // DÉBITOS — costos, gastos, inventario, IVA
    f.ia.lineas_contables?.forEach((l,i)=>{
+      f.ia.lineas_contables?.forEach((l,i)=>{
       const cta = l.cuenta_debito_codigo||"";
       const esPasivo = cta.startsWith("22")||cta.startsWith("23")||cta.startsWith("24");
       filas.push({id:`lc${i}`,tipo:esPasivo?"credito":"debito",descripcion:l.descripcion,valor:l.valor_base,cuenta:l.cuenta_debito_codigo,editable:true,eliminable:true,advertencia:l.sin_cuenta_exacta});
+    });
     });
     if (f.totalIva>0 && f.ia.cuenta_iva_codigo)
       filas.push({id:"iva",tipo:"debito",descripcion:f.ia.cuenta_iva_nombre||"IVA",valor:f.totalIva,cuenta:f.ia.cuenta_iva_codigo,editable:true,eliminable:true,advertencia:false});
