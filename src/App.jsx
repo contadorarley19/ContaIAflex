@@ -3,9 +3,7 @@ import { useState, useCallback } from "react";
 const API_URL = "/.netlify/functions/claude";
 
 const PUC_EMPRESA = `plncod	plnnom
-1	ACTIVO
 11050501	Caja general
-11051001	Caja menor
 11100501	Puerto concordia
 11100502	Cumaral
 11100503	Cumaral colpatria
@@ -13,13 +11,11 @@ const PUC_EMPRESA = `plncod	plnnom
 11200501	Banco de bogota 351345202
 13050501	Clientes
 13300501	A proveedores
-13353505	En garantia
 13551501	1% contrato de obra
 13551502	1% transporte de carga
 13551510	10% honorarios
 13551511	11% honorarios
 13551535	3.5% compras
-13551750	50% rete iva
 13551801	Retencion de industri y comercio
 14100508	Honorarios
 14300501	Alquileres
@@ -32,7 +28,6 @@ const PUC_EMPRESA = `plncod	plnnom
 14302001	Instalaciones electricas
 14305001	Transportes fletes y acarreos
 14310501	Polizas
-143505	COMPRAS
 14350501	Compras para la construccion de obras
 14450501	Transporte de carga
 14456001	Telefono
@@ -48,12 +43,11 @@ const PUC_EMPRESA = `plncod	plnnom
 14959501	Otros
 15200501	Maquinaria y equipo
 15240501	Equipo de oficina
-2	PASIVO
 22050101	Proveedores
-23352501	Honorarios
-23353001	Servicios
-23354001	Arrendamientos
-23354501	Transportes fletes y acarreos
+23352501	Honorarios por pagar
+23353001	Servicios por pagar
+23354001	Arrendamientos por pagar
+23354501	Transportes fletes por pagar
 23651510	10% honorarios
 23651511	11% honorarios
 23652501	1% transporte
@@ -72,15 +66,13 @@ const PUC_EMPRESA = `plncod	plnnom
 24081010	Iva compras
 24081501	Retencion de iva
 25050501	Salarios por pagar
-5	GASTOS
-51100501	Honorarios
+51100501	Honorarios admon
 51353001	Energia electrica
-51353501	Telefono
+51353501	Telefono admon
 51354001	Mensajeria
-51355001	Transporte flete y acarreo
-51959901	Otros gastos
-6	COSTO DE VENTAS
-61100508	Honorarios
+51355001	Transporte flete admon
+51959901	Otros gastos admon
+61100508	Honorarios obra
 61157001	Iva transitorio compras
 61157002	Iva de servicios
 61201501	Alquileres maquinaria
@@ -91,28 +83,27 @@ const PUC_EMPRESA = `plncod	plnnom
 61301801	Mantenimiento y reparacion
 61305001	Transportes fletes y acarreos
 61310501	Polizas
-613505	COMPRAS
 61350501	Compras para la construccion de obras
 61350502	Compra material reposicion 1%
 61350503	Compra productos de señalizacion
-61360501	Aseo y vigilancia
-61360504	Telefono
-61360505	Transporte fletes y acarreos
+61360501	Aseo y vigilancia obra
+61360504	Telefono obra
+61360505	Transporte fletes obra
 61360507	Acueducto y alcantarillado
 61360509	Transporte de pasajeros
 61360510	Transporte de carga
 61361501	Asistencia tecnica
 61400501	Notariales
 61400502	Gastos legales
-61450501	Transporte de carga
-61455001	Mantenimiento y reparaciones
-61550501	Alojamiento y manutencion
+61450501	Transporte de carga obra
+61455001	Mantenimiento y reparaciones obra
+61550501	Alojamiento y manutencion obra
 61552001	Pasajes terrestres
-61952001	Elementos de aseo y cafeteria
-61952101	Utiles de papeleria y fotocopias
+61952001	Elementos de aseo cafeteria
+61952101	Utiles de papeleria
 61953501	Combustible
 61953502	Lubricantes
-61959901	Otros gastos`;
+61959901	Otros gastos obra`;
 
 const AUTORRETENEDORES = {
   "899999068":"ECOPETROL S.A.","899999082":"EMPRESA DE ENERGIA DE BOGOTA S.A. ESP",
@@ -221,14 +212,16 @@ async function analizarConIA(datos, tratamiento, tratIva) {
   const itemsTexto = datos.items?.length
     ? datos.items.map(i=>`- Cant ${i.cantidad} | ${i.descripcion} | $${i.valor.toLocaleString("es-CO")}`).join("\n")
     : "(sin ítems)";
+
   const instrTrat = tratamiento==="inventario"
     ? `INVENTARIO: conserva cada ítem por separado. Usa SOLO cuentas 14x. NUNCA uses 61x ni 51x. Cuenta principal: 14350501. Una línea por ítem.`
     : `COSTO/GASTO: resume en UN solo concepto. Usa SOLO cuentas 61x o 51x. NUNCA uses cuentas 14x. Cuenta principal: 61350501.`;
-  const instrIva = tratIva==="descontable"
-    ? `IVA → 24081010 "Iva compras"`
-    : `IVA → detecta: bienes físicos=61157001 "Iva transitorio compras", servicios=61157002 "Iva de servicios"`;
 
-  const prompt = `Eres contador colombiano experto en PUC. Responde SOLO JSON válido.
+  const instrIva = tratIva==="descontable"
+    ? `IVA → cuenta_iva_codigo: "24081010", cuenta_iva_nombre: "Iva compras"`
+    : `IVA → detecta tipo: si son bienes físicos usa cuenta_iva_codigo: "61157001" nombre: "Iva transitorio compras". Si son servicios usa cuenta_iva_codigo: "61157002" nombre: "Iva de servicios"`;
+
+  const prompt = `Eres contador colombiano experto en PUC. Responde SOLO JSON válido sin texto adicional.
 
 FACTURA:
 Proveedor: ${datos.razonSocial} | NIT: ${datos.nitProveedor} | Fecha: ${datos.fecha}
@@ -241,23 +234,20 @@ ${PUC_EMPRESA}
 
 ${instrTrat}
 
-RETENCIONES (usa solo cuentas del PUC):
+RETENCIONES — usa solo estas cuentas del PUC:
 23654035=2.5% compras | 23654036=3.5% compras no decl | 23652501=1% transporte
 23652504=4% servicios decl | 23652506=6% servicios no decl
 23651510=10% honorarios | 23651511=11% honorarios | 23653035=3.5% arriendos | 23657002=2% obra
 
 ${instrIva}
 
-REGLAS CONTABLES ESTRICTAS — NUNCA las violes:
-DÉBITO siempre: cuentas de costo (6x), gasto (5x), inventario/contratos (14x), IVA descontable (24081010), IVA al gasto (61157001, 61157002)
-CRÉDITO siempre: proveedores (22x), retenciones (23x), IVA por pagar (24x excepto 24081010)
-NUNCA pongas retenciones (23x) ni proveedores (22x) en débito.
-NUNCA pongas costos/gastos (6x, 5x) en crédito.
+REGLAS ESTRICTAS:
+1. lineas_contables debe contener SOLO las cuentas de costo/gasto/inventario (6x, 5x, 14x). 
+2. NUNCA incluyas cuentas 22x, 23x ni 24x en lineas_contables.
+3. Las cuentas de retención van en cuenta_retefuente_codigo, no en lineas_contables.
 
-JSON:
-{"concepto_general":"","tipo_cuenta":"Inventario|Costo|Gasto","retefuente_pct":0,"retefuente_descripcion":"","cuenta_retefuente_codigo":"","cuenta_retefuente_nombre":"","retica_por_mil":0,"advertencia_puc":"","cuenta_iva_codigo":"","cuenta_iva_nombre":"","lineas_contables":[{"descripcion":"","cantidad":1,"valor_base":0,"cuenta_debito_codigo":"","cuenta_debito_nombre":"","sin_cuenta_exacta":false}]}
-
-IMPORTANTE: lineas_contables debe contener SOLO líneas de costo/gasto/inventario. NO incluyas cuentas 22x ni 23x en lineas_contables.`;
+Responde con este JSON exacto:
+{"concepto_general":"","tipo_cuenta":"Inventario|Costo|Gasto","retefuente_pct":0,"retefuente_descripcion":"","cuenta_retefuente_codigo":"","cuenta_retefuente_nombre":"","retica_por_mil":0,"advertencia_puc":"","cuenta_iva_codigo":"","cuenta_iva_nombre":"","lineas_contables":[{"descripcion":"","cantidad":1,"valor_base":0,"cuenta_debito_codigo":"","cuenta_debito_nombre":"","sin_cuenta_exacta":false}]}`;
 
   const data = await callClaude({
     model:"claude-sonnet-4-5", max_tokens:2000,
@@ -413,8 +403,8 @@ function ModalTratamiento({ archivos, onConfirm, onCancel }) {
           <div style={{fontSize:10,color:"#64748b",fontWeight:600,textTransform:"uppercase",letterSpacing:".08em",marginBottom:8}}>Paso 1 — Tratamiento</div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
             {[
-              {key:"inventario",icono:"📦",titulo:"Inventario",desc:"Ítem por ítem · cta 1435",color:"#1e3a5f",borde:"#3b6fd4"},
-              {key:"gasto",icono:"📉",titulo:"Costo / Gasto",desc:"Concepto resumido · cta 6135",color:"#2d1b4e",borde:"#8b5cf6"},
+              {key:"inventario",icono:"📦",titulo:"Inventario",desc:"Ítem por ítem · cta 14350501",color:"#1e3a5f",borde:"#3b6fd4"},
+              {key:"gasto",icono:"📉",titulo:"Costo / Gasto",desc:"Concepto resumido · cta 61350501",color:"#2d1b4e",borde:"#8b5cf6"},
             ].map(op=>(
               <button key={op.key} onClick={()=>setTratamiento(op.key)}
                 style={{background:tratamiento===op.key?op.color:"#0f1117",border:`2px solid ${tratamiento===op.key?op.borde:"#232840"}`,borderRadius:10,padding:"13px",cursor:"pointer",textAlign:"left"}}>
@@ -462,41 +452,84 @@ function ModalTratamiento({ archivos, onConfirm, onCancel }) {
   );
 }
 
+// ─── CARD FACTURA ─────────────────────────────────────────────────────────────
 function FacturaCard({ f, idx, onUpdate, docNum }) {
   const [expandido, setExpandido] = useState(true);
   const fmt = n => `$${Number(n||0).toLocaleString("es-CO")}`;
 
-  const asientoInicial = useCallback(() => {
+  // Construye el asiento inicial — se ejecuta UNA sola vez al montar
+  const construirAsiento = () => {
     if (!f.ia) return [];
-   const lineasUnicas = [];
+    const filas = [];
     const cuentasVistas = new Set();
-    (f.ia.lineas_contables||[]).forEach((l)=>{
-      const cta = l.cuenta_debito_codigo||"";
-      if (!cta || cta==="22050101" || cuentasVistas.has(cta) || cta===f.ia.cuenta_iva_codigo) return;
-      cuentasVistas.add(cta);
-      const esPasivo = cta.startsWith("22")||cta.startsWith("23")||cta.startsWith("24");
-      lineasUnicas.push({id:`lc${cuentasVistas.size}`,tipo:esPasivo?"credito":"debito",descripcion:l.descripcion,valor:l.valor_base,cuenta:cta,editable:true,eliminable:true,advertencia:l.sin_cuenta_exacta});
-    });
-    filas.push(...lineasUnicas);
-    });
-    if (f.totalIva>0 && f.ia.cuenta_iva_codigo)
-      filas.push({id:"iva",tipo:"debito",descripcion:f.ia.cuenta_iva_nombre||"IVA",valor:f.totalIva,cuenta:f.ia.cuenta_iva_codigo,editable:true,eliminable:true,advertencia:false});
-    // CRÉDITOS — retenciones y proveedor
-    if (!f.esAutorretenedor && (f.retefuente||0)>0 && f.ia.cuenta_retefuente_codigo)
-      filas.push({id:"rete",tipo:"credito",descripcion:f.ia.retefuente_descripcion||"Retención en la fuente",valor:f.retefuente,cuenta:f.ia.cuenta_retefuente_codigo,editable:true,eliminable:true,advertencia:false});
-    if ((f.retica||0)>0)
-      filas.push({id:"retica",tipo:"credito",descripcion:"Retención industria y comercio",valor:f.retica,cuenta:"13551801",editable:true,eliminable:true,advertencia:false});
-    const neto = (f.total||0)-(f.esAutorretenedor?0:(f.retefuente||0))-(f.retica||0);
-    filas.push({id:"prov",tipo:"credito",descripcion:`Proveedor — ${(f.razonSocial||"").slice(0,40)}`,valor:neto,cuenta:"22050101",editable:true,eliminable:false,advertencia:false});
-    return filas;
-  },[f]);
 
-  const [filas, setFilas] = useState(()=> f.asiento || asientoInicial());
-  const recalcProv = useCallback(fs => {
+    // 1. DÉBITOS — solo cuentas de costo/gasto/inventario (NO 22x, 23x, 24x)
+    (f.ia.lineas_contables||[]).forEach((l, i) => {
+      const cta = l.cuenta_debito_codigo||"";
+      // Ignorar: vacías, proveedores, retenciones, IVA (se agrega aparte)
+      if (!cta) return;
+      if (cta.startsWith("22") || cta.startsWith("23") || cta.startsWith("24")) return;
+      if (cta === f.ia.cuenta_iva_codigo) return;
+      if (cuentasVistas.has(cta)) return; // sin duplicados
+      cuentasVistas.add(cta);
+      filas.push({
+        id:`lc${i}`, tipo:"debito",
+        descripcion:l.descripcion, valor:l.valor_base,
+        cuenta:cta, editable:true, eliminable:true, advertencia:!!l.sin_cuenta_exacta
+      });
+    });
+
+    // 2. IVA (DÉBITO)
+    if ((f.totalIva||0) > 0 && f.ia.cuenta_iva_codigo) {
+      filas.push({
+        id:"iva", tipo:"debito",
+        descripcion:f.ia.cuenta_iva_nombre||"IVA",
+        valor:f.totalIva, cuenta:f.ia.cuenta_iva_codigo,
+        editable:true, eliminable:true, advertencia:false
+      });
+    }
+
+    // 3. ReteFuente (CRÉDITO)
+    if (!f.esAutorretenedor && (f.retefuente||0) > 0 && f.ia.cuenta_retefuente_codigo) {
+      filas.push({
+        id:"rete", tipo:"credito",
+        descripcion:f.ia.retefuente_descripcion||"Retención en la fuente",
+        valor:f.retefuente, cuenta:f.ia.cuenta_retefuente_codigo,
+        editable:true, eliminable:true, advertencia:false
+      });
+    }
+
+    // 4. ReteICA (CRÉDITO)
+    if ((f.retica||0) > 0) {
+      filas.push({
+        id:"retica", tipo:"credito",
+        descripcion:"Retención industria y comercio",
+        valor:f.retica, cuenta:"13551801",
+        editable:true, eliminable:true, advertencia:false
+      });
+    }
+
+    // 5. Proveedor (CRÉDITO) — siempre al final
+    const totalDeb = filas.filter(r=>r.tipo==="debito").reduce((s,r)=>s+r.valor,0);
+    const totalCre = filas.filter(r=>r.tipo==="credito").reduce((s,r)=>s+r.valor,0);
+    const neto = Math.max(0, totalDeb - totalCre);
+    filas.push({
+      id:"prov", tipo:"credito",
+      descripcion:`Proveedor — ${(f.razonSocial||"").slice(0,40)}`,
+      valor:neto, cuenta:"22050101",
+      editable:true, eliminable:false, advertencia:false
+    });
+
+    return filas;
+  };
+
+  const [filas, setFilas] = useState(() => f.asiento || construirAsiento());
+
+  const recalcProv = (fs) => {
     const deb = fs.filter(r=>r.tipo==="debito").reduce((s,r)=>s+r.valor,0);
     const cre = fs.filter(r=>r.tipo==="credito"&&r.id!=="prov").reduce((s,r)=>s+r.valor,0);
     return fs.map(r=>r.id==="prov"?{...r,valor:Math.max(0,deb-cre)}:r);
-  },[]);
+  };
 
   const updFila = (id,campo,valor) => { const n=recalcProv(filas.map(r=>r.id===id?{...r,[campo]:valor}:r)); setFilas(n); onUpdate(f.id,"asiento",n); };
   const elimFila = id => { const n=recalcProv(filas.filter(r=>r.id!==id)); setFilas(n); onUpdate(f.id,"asiento",n); };
@@ -534,12 +567,13 @@ function FacturaCard({ f, idx, onUpdate, docNum }) {
         {f.aprobado&&<span style={{background:"#14532d",color:"#86efac",borderRadius:20,padding:"2px 9px",fontSize:11,fontWeight:600}}>✓ Aprobado</span>}
         <div style={{marginLeft:"auto",display:"flex",gap:6}}>
           <button onClick={()=>setExpandido(e=>!e)} style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",borderRadius:6,padding:"3px 10px",cursor:"pointer",fontSize:11}}>{expandido?"▲":"▼ Asiento"}</button>
-          <button onClick={()=>{ if(!cuadra){alert("El asiento está descuadrado.");return;} onUpdate(f.id,"aprobado",!f.aprobado); }}
+          <button onClick={()=>{ if(!cuadra){alert("El asiento está descuadrado. Revisa antes de aprobar.");return;} onUpdate(f.id,"aprobado",!f.aprobado); }}
             style={{background:f.aprobado?"#14532d":"#4f7cff",color:f.aprobado?"#86efac":"#fff",border:"none",borderRadius:6,padding:"3px 14px",cursor:"pointer",fontSize:11,fontWeight:700}}>
             {f.aprobado?"✓ Aprobado":"Aprobar"}
           </button>
         </div>
       </div>
+
       <div style={{padding:"11px 16px",display:"flex",gap:14,alignItems:"flex-start",flexWrap:"wrap"}}>
         <div style={{flex:2,minWidth:220}}>
           <div style={{fontFamily:"sans-serif",fontWeight:700,fontSize:14,color:"#fff",marginBottom:2}}>{f.razonSocial||f.archivo}</div>
@@ -559,6 +593,7 @@ function FacturaCard({ f, idx, onUpdate, docNum }) {
           ))}
         </div>
       </div>
+
       {expandido&&f.ia&&(
         <div style={{borderTop:"1px solid #1e2235",padding:"12px 16px",background:"#0f1117"}}>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:9}}>
