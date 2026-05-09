@@ -472,7 +472,7 @@ function FacturaCard({ f, idx, onUpdate, docNum }) {
     const cuentasVistas = new Set();
     (f.ia.lineas_contables||[]).forEach((l)=>{
       const cta = l.cuenta_debito_codigo||"";
-      if (!cta || cta==="22050101" || cuentasVistas.has(cta)) return;
+      if (!cta || cta==="22050101" || cuentasVistas.has(cta) || cta===f.ia.cuenta_iva_codigo) return;
       cuentasVistas.add(cta);
       const esPasivo = cta.startsWith("22")||cta.startsWith("23")||cta.startsWith("24");
       lineasUnicas.push({id:`lc${cuentasVistas.size}`,tipo:esPasivo?"credito":"debito",descripcion:l.descripcion,valor:l.valor_base,cuenta:cta,editable:true,eliminable:true,advertencia:l.sin_cuenta_exacta});
