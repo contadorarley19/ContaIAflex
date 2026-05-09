@@ -1,6 +1,7 @@
 import { useState, useCallback } from "react";
 
-const API_URL = "https://contaiaflex.netlify.app/.netlify/functions/claude";
+const API_URL = "https://api.anthropic.com/v1/messages";
+const API_KEY = "sk-ant-TUKEY..."; // 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;
 
 const PUC_EMPRESA = `plncod	plnnom
 1	ACTIVO
