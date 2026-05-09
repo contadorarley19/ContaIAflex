@@ -1,6 +1,6 @@
 import { useState, useCallback } from "react";
 
-const API_URL = "/api/claude";
+const API_URL = "/.netlify/functions/claude";
 
 const PUC_EMPRESA = `plncod	plnnom
 1	ACTIVO
