@@ -1,69 +1,27 @@
-import { useState, async function callClaude(body) {
-  const res = await fetch("https://contaiaflex.netlify.app/.netlify/functions/claude", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-
-  if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`HTTP ${res.status}: ${txt}`);
-  }
-
-  const data = await res.json();
-
-  if (data.error) {
-    throw new Error(data.error.message || JSON.stringify(data.error));
-  }
-
-  return data;
-} } from "react";
+import { useState, useCallback } from "react";
 
 const API_URL = "https://contaiaflex.netlify.app/.netlify/functions/claude";
 
 const PUC_EMPRESA = `plncod	plnnom
 1	ACTIVO
-1052705	AUXILIO DE TRANSPORTE
-11	DISPONIBLE
-1105	CAJA
-110505	CAJA GENERAL
 11050501	Caja general
-110510	CAJAS MENORES
 11051001	Caja menor
-1110	BANCOS
-111005	MONEDA NACIONAL
 11100501	Puerto concordia
 11100502	Cumaral
 11100503	Cumaral colpatria
 11100504	La macarena
-1120	CUENTAS DE AHORRO
-112005	BANCOS
 11200501	Banco de bogota 351345202
-13	DEUDORES
-1305	CLIENTES
-130505	NACIONALES
 13050501	Clientes
-1330	ANTICIPOS Y AVANCES
-133005	A PROVEEDORES
 13300501	A proveedores
-1335	DEPOSITOS
-133535	EN GARANTIA
 13353505	En garantia
-1355	ANTICIPO DE IMPUESTOS Y CONTRI
-135515	RETENCION EN LA FUENTE
 13551501	1% contrato de obra
 13551502	1% transporte de carga
 13551510	10% honorarios
 13551511	11% honorarios
 13551535	3.5% compras
-135517	IMPUESTO A LAS VENTAS RETENIDO
 13551750	50% rete iva
-135518	IMPUESTO DE INDUSTRIA Y COMERC
 13551801	Retencion de industri y comercio
-14	CONTRATOS EN EJECUSION
-1410	HONORARIOS
 14100508	Honorarios
-1430	CONSTRUCCIONES
 14300501	Alquileres
 14301002	Obras civiles
 14301501	Servicios tecnicos
@@ -73,40 +31,29 @@ const PUC_EMPRESA = `plncod	plnnom
 14301901	Adecuacion e instalacion
 14302001	Instalaciones electricas
 14305001	Transportes fletes y acarreos
-1431	SEGUROS
 14310501	Polizas
-1435	COMPRAS
 143505	COMPRAS
 14350501	Compras para la construccion de obras
-1445	TRANSPORTE Y SERVICIOS
 14450501	Transporte de carga
-144560	SERVICIOS PUBLICOS
 14456001	Telefono
 14456002	Luz
 14456003	Acueducto y alcantarillado
-1453	GASTOS
 14530505	Gastos bancarios
 14531001	Gravamen y movimiento financiero
 14532001	Intereses
-1455	GASTOS DE VIAJE
 14550501	Alojamiento y manutencion
-1495	DIVERSOS
 14952001	Elementos de aseo y cafeteria
 14952101	Utiles papeleria y fotocopias
 14953501	Combustibles y lubricantes
 14959501	Otros
-15	PROPIEDAD PLANTA Y EQUIPO
 15200501	Maquinaria y equipo
 15240501	Equipo de oficina
 2	PASIVO
-22	PROVEEDORES
 22050101	Proveedores
-23	CUENTAS POR PAGAR
 23352501	Honorarios
 23353001	Servicios
 23354001	Arrendamientos
 23354501	Transportes fletes y acarreos
-2365	RETENCION EN LA FUENTE
 23651510	10% honorarios
 23651511	11% honorarios
 23652501	1% transporte
@@ -121,26 +68,19 @@ const PUC_EMPRESA = `plncod	plnnom
 23654036	Rete de 3.5%
 23657001	1% contrato de obra
 23657002	Obra 2%
-2367	IMPUESTO A LAS VENTAS RETENIDO
 23670101	Impuesto a las ventas retenido
-24	IMPUESTOS
 24081010	Iva compras
 24081501	Retencion de iva
-25	OBLIGACIONES LABORALES
 25050501	Salarios por pagar
 5	GASTOS
 51100501	Honorarios
-513505	ASEO Y VIGILANCIA
 51353001	Energia electrica
 51353501	Telefono
 51354001	Mensajeria
 51355001	Transporte flete y acarreo
-513595	OTROS
 51959901	Otros gastos
 6	COSTO DE VENTAS
-61	COSTO DE VENTAS Y PRESTACIONES
 61100508	Honorarios
-6115	IMPUESTOS DE LEY
 61157001	Iva transitorio compras
 61157002	Iva de servicios
 61201501	Alquileres maquinaria
@@ -151,12 +91,10 @@ const PUC_EMPRESA = `plncod	plnnom
 61301801	Mantenimiento y reparacion
 61305001	Transportes fletes y acarreos
 61310501	Polizas
-6135	COMPRAS
 613505	COMPRAS
 61350501	Compras para la construccion de obras
 61350502	Compra material reposicion 1%
 61350503	Compra productos de señalizacion
-6136	SERVICIOS
 61360501	Aseo y vigilancia
 61360504	Telefono
 61360505	Transporte fletes y acarreos
@@ -164,14 +102,12 @@ const PUC_EMPRESA = `plncod	plnnom
 61360509	Transporte de pasajeros
 61360510	Transporte de carga
 61361501	Asistencia tecnica
-6140	GASTOS LEGALES
 61400501	Notariales
 61400502	Gastos legales
 61450501	Transporte de carga
 61455001	Mantenimiento y reparaciones
 61550501	Alojamiento y manutencion
 61552001	Pasajes terrestres
-6195	DIVERSOS
 61952001	Elementos de aseo y cafeteria
 61952101	Utiles de papeleria y fotocopias
 61953501	Combustible
@@ -253,7 +189,13 @@ async function callClaude(body) {
     headers:{"Content-Type":"application/json"},
     body: JSON.stringify(body),
   });
-  return res.json();
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error(`HTTP ${res.status}: ${txt}`);
+  }
+  const data = await res.json();
+  if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+  return data;
 }
 
 async function parsePDFFactura(archivo) {
@@ -359,7 +301,7 @@ function CeldaEditable({ valor, onChange, tipo="text", style={} }) {
       onChange={e=>setTmp(e.target.value)}
       onBlur={confirmar}
       onKeyDown={e=>{ if(e.key==="Enter")confirmar(); if(e.key==="Escape")setEditando(false); }}
-      style={{background:"#0d101a",border:"1px solid #4f7cff",color:"#e2e8f0",borderRadius:4,padding:"2px 6px",fontFamily:"'IBM Plex Mono',monospace",fontSize:11,width:"100%",outline:"none",...style}}
+      style={{background:"#0d101a",border:"1px solid #4f7cff",color:"#e2e8f0",borderRadius:4,padding:"2px 6px",fontFamily:"monospace",fontSize:11,width:"100%",outline:"none",...style}}
     />
   );
   return <span onClick={()=>{setTmp(valor);setEditando(true);}} title="Clic para editar" style={{cursor:"pointer",borderBottom:"1px dashed #2d3352",paddingBottom:1,...style}}>{valor}</span>;
@@ -371,29 +313,28 @@ function ModalExport({ facturas, onClose }) {
   const set = (k,v) => setCfg(p=>({...p,[k]:v}));
   const preview = aprobadas.map((f,i)=>({...f, docNumAsignado:(parseInt(cfg.docNumInicio)||1)+i}));
   const fmt = n => `$${Number(n||0).toLocaleString("es-CO")}`;
-
   return (
     <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.88)",zIndex:2000,display:"flex",alignItems:"center",justifyContent:"center",padding:16,overflowY:"auto"}}>
       <div style={{background:"#161923",border:"1px solid #232840",borderRadius:16,padding:26,maxWidth:700,width:"100%"}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:18}}>
           <div>
-            <div style={{fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:700,fontSize:16,color:"#fff"}}>⬇ Exportar comprobante contable</div>
+            <div style={{fontFamily:"sans-serif",fontWeight:700,fontSize:16,color:"#fff"}}>⬇ Exportar comprobante contable</div>
             <div style={{fontSize:11,color:"#64748b",marginTop:2}}>{aprobadas.length} facturas aprobadas · ordenadas por fecha</div>
           </div>
-          <button onClick={onClose} style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",borderRadius:6,padding:"4px 10px",cursor:"pointer",fontSize:12,fontFamily:"inherit"}}>✕</button>
+          <button onClick={onClose} style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",borderRadius:6,padding:"4px 10px",cursor:"pointer",fontSize:12}}>✕</button>
         </div>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:11,marginBottom:18}}>
           {[
             {k:"docNumInicio",label:"DocNum — Consecutivo inicial",ph:"Ej: 29",help:"Suma +1 por factura en orden de fecha"},
             {k:"tpcCod",label:"TpcCod — Tipo de documento",ph:"Ej: CO",help:"Código del comprobante en tu software"},
             {k:"prfCod",label:"PrfCod — Prefijo",ph:"Ej: COMP",help:"Prefijo del comprobante"},
-            {k:"ctoCod",label:"CtoCod — Centro de costo",ph:"Ej: CC001",help:"Código del centro de costo o proyecto"},
+            {k:"ctoCod",label:"CtoCod — Centro de costo",ph:"Ej: CC001",help:"Código del centro de costo"},
             {k:"docAux",label:"DocAux — Auxiliar / Referencia",ph:"Ej: OC-2026-01",help:"Referencia adicional (opcional)"},
           ].map(({k,label,ph,help})=>(
             <div key={k}>
               <div style={{fontSize:10,color:"#64748b",textTransform:"uppercase",letterSpacing:".07em",marginBottom:3}}>{label}</div>
               <input value={cfg[k]} onChange={e=>set(k,e.target.value)} placeholder={ph}
-                style={{width:"100%",background:"#0f1117",border:"1px solid #2d3352",color:"#e2e8f0",borderRadius:6,padding:"7px 10px",fontFamily:"'IBM Plex Mono',monospace",fontSize:12,outline:"none"}}/>
+                style={{width:"100%",background:"#0f1117",border:"1px solid #2d3352",color:"#e2e8f0",borderRadius:6,padding:"7px 10px",fontFamily:"monospace",fontSize:12,outline:"none"}}/>
               <div style={{fontSize:10,color:"#475569",marginTop:2}}>{help}</div>
             </div>
           ))}
@@ -418,8 +359,8 @@ function ModalExport({ facturas, onClose }) {
                       <td style={{padding:"6px 9px",color:"#94a3b8"}}>{f.fecha}</td>
                       <td style={{padding:"6px 9px",color:"#cbd5e1",maxWidth:150,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{f.razonSocial}</td>
                       <td style={{padding:"6px 9px",color:"#64748b",fontFamily:"monospace"}}>{f.prefijo}</td>
-                      <td style={{padding:"6px 9px",color:"#4ade80",fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:600}}>{fmt(f.total)}</td>
-                      <td style={{padding:"6px 9px",color:"#fbbf24",fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:600}}>{fmt((f.total||0)-(f.retefuente||0)-(f.retica||0))}</td>
+                      <td style={{padding:"6px 9px",color:"#4ade80",fontWeight:600}}>{fmt(f.total)}</td>
+                      <td style={{padding:"6px 9px",color:"#fbbf24",fontWeight:600}}>{fmt((f.total||0)-(f.retefuente||0)-(f.retica||0))}</td>
                     </tr>
                   ))
                 }
@@ -433,13 +374,13 @@ function ModalExport({ facturas, onClose }) {
             <div style={{fontSize:10,color:"#64748b",fontWeight:600,marginBottom:2}}>📄 Por factura:</div>
             {preview.map(f=>(
               <button key={f.id} onClick={()=>exportarExcel(facturas,cfg,f)}
-                style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",borderRadius:5,padding:"3px 9px",cursor:"pointer",fontSize:10,fontFamily:"inherit",textAlign:"left",whiteSpace:"nowrap"}}>
+                style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",borderRadius:5,padding:"3px 9px",cursor:"pointer",fontSize:10,textAlign:"left",whiteSpace:"nowrap"}}>
                 ⬇ {cfg.tpcCod}{f.docNumAsignado} · {f.razonSocial?.slice(0,18)}
               </button>
             ))}
           </div>
           <button onClick={()=>exportarExcel(facturas,cfg)} disabled={aprobadas.length===0}
-            style={{background:aprobadas.length?"#4f7cff":"#1e2235",color:aprobadas.length?"#fff":"#475569",border:"none",borderRadius:8,padding:"10px 22px",cursor:aprobadas.length?"pointer":"not-allowed",fontSize:13,fontWeight:700,fontFamily:"inherit"}}>
+            style={{background:aprobadas.length?"#4f7cff":"#1e2235",color:aprobadas.length?"#fff":"#475569",border:"none",borderRadius:8,padding:"10px 22px",cursor:aprobadas.length?"pointer":"not-allowed",fontSize:13,fontWeight:700}}>
             ⬇ Descargar TODAS ({aprobadas.length})
           </button>
         </div>
@@ -457,7 +398,7 @@ function ModalTratamiento({ archivos, onConfirm, onCancel }) {
       <div style={{background:"#161923",border:"1px solid #232840",borderRadius:16,padding:26,maxWidth:540,width:"100%"}}>
         <div style={{textAlign:"center",marginBottom:20}}>
           <div style={{fontSize:26,marginBottom:8}}>📋</div>
-          <div style={{fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:700,fontSize:16,color:"#fff",marginBottom:4}}>¿Cómo se contabiliza?</div>
+          <div style={{fontFamily:"sans-serif",fontWeight:700,fontSize:16,color:"#fff",marginBottom:4}}>¿Cómo se contabiliza?</div>
           <div style={{fontSize:11,color:"#64748b"}}>{archivos.length===1?`📄 ${archivos[0].name}`:`${archivos.length} archivos`}</div>
         </div>
         <div style={{marginBottom:16}}>
@@ -468,10 +409,10 @@ function ModalTratamiento({ archivos, onConfirm, onCancel }) {
               {key:"gasto",icono:"📉",titulo:"Costo / Gasto",desc:"Concepto resumido · cta 6135",color:"#2d1b4e",borde:"#8b5cf6"},
             ].map(op=>(
               <button key={op.key} onClick={()=>setTratamiento(op.key)}
-                style={{background:tratamiento===op.key?op.color:"#0f1117",border:`2px solid ${tratamiento===op.key?op.borde:"#232840"}`,borderRadius:10,padding:"13px",cursor:"pointer",textAlign:"left",transition:"all .15s"}}>
+                style={{background:tratamiento===op.key?op.color:"#0f1117",border:`2px solid ${tratamiento===op.key?op.borde:"#232840"}`,borderRadius:10,padding:"13px",cursor:"pointer",textAlign:"left"}}>
                 <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:4}}>
                   <span style={{fontSize:17}}>{op.icono}</span>
-                  <span style={{fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:700,fontSize:13,color:"#fff"}}>{op.titulo}</span>
+                  <span style={{fontFamily:"sans-serif",fontWeight:700,fontSize:13,color:"#fff"}}>{op.titulo}</span>
                   {tratamiento===op.key&&<span style={{marginLeft:"auto",color:op.borde}}>✓</span>}
                 </div>
                 <div style={{fontSize:11,color:"#94a3b8"}}>{op.desc}</div>
@@ -487,10 +428,10 @@ function ModalTratamiento({ archivos, onConfirm, onCancel }) {
               {key:"gasto",icono:"📉",titulo:"IVA al gasto (consorcio)",desc:"Sin IVA generado · IA detecta 61157001 o 61157002",color:"#1a2d1a",borde:"#22c55e"},
             ].map(op=>(
               <button key={op.key} onClick={()=>setTratIva(op.key)}
-                style={{background:tratIva===op.key?op.color:"#0f1117",border:`2px solid ${tratIva===op.key?op.borde:"#232840"}`,borderRadius:9,padding:"10px 13px",cursor:"pointer",textAlign:"left",transition:"all .15s",display:"flex",alignItems:"center",gap:10}}>
+                style={{background:tratIva===op.key?op.color:"#0f1117",border:`2px solid ${tratIva===op.key?op.borde:"#232840"}`,borderRadius:9,padding:"10px 13px",cursor:"pointer",textAlign:"left",display:"flex",alignItems:"center",gap:10}}>
                 <span style={{fontSize:17,minWidth:22}}>{op.icono}</span>
                 <div style={{flex:1}}>
-                  <div style={{fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:700,fontSize:13,color:"#fff",marginBottom:2}}>{op.titulo}</div>
+                  <div style={{fontFamily:"sans-serif",fontWeight:700,fontSize:13,color:"#fff",marginBottom:2}}>{op.titulo}</div>
                   <div style={{fontSize:11,color:"#94a3b8"}}>{op.desc}</div>
                 </div>
                 {tratIva===op.key&&<span style={{fontSize:14,color:op.borde}}>✓</span>}
@@ -502,9 +443,9 @@ function ModalTratamiento({ archivos, onConfirm, onCancel }) {
           ✓ <strong>PUC integrado</strong> — la IA usará exclusivamente las cuentas de la empresa.
         </div>
         <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
-          <button onClick={onCancel} style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",padding:"8px 16px",borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:"inherit"}}>Cancelar</button>
+          <button onClick={onCancel} style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",padding:"8px 16px",borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:600}}>Cancelar</button>
           <button onClick={()=>listo&&onConfirm(tratamiento,tratIva)} disabled={!listo}
-            style={{background:listo?"#4f7cff":"#1e2235",color:listo?"#fff":"#475569",border:"none",padding:"8px 22px",borderRadius:6,cursor:listo?"pointer":"not-allowed",fontSize:13,fontWeight:700,fontFamily:"inherit"}}>
+            style={{background:listo?"#4f7cff":"#1e2235",color:listo?"#fff":"#475569",border:"none",padding:"8px 22px",borderRadius:6,cursor:listo?"pointer":"not-allowed",fontSize:13,fontWeight:700}}>
             {listo?"Procesar →":"Completa los 2 pasos"}
           </button>
         </div>
@@ -559,15 +500,14 @@ function FacturaCard({ f, idx, onUpdate, docNum }) {
   if (f.error) return (
     <div style={{background:"#1a0a0a",border:"1px solid #3b1f1f",borderRadius:10,padding:"12px 18px",display:"flex",gap:10,alignItems:"center"}}>
       <span style={{color:"#64748b",fontSize:11}}>#{(idx+1).toString().padStart(2,"0")}</span>
-      <span style={{color:"#f87171",fontSize:13}}>❌ {f.archivo}</span>
-      <span style={{color:"#64748b",fontSize:12,flex:1}}>{f.error}</span>
+      <span style={{color:"#f87171",fontSize:13}}>❌ {f.archivo}: {f.error}</span>
     </div>
   );
 
   return (
-    <div style={{background:"#161923",border:`1px solid ${f.aprobado?"#166534":cuadra?"#232840":"#7c3700"}`,borderRadius:12,overflow:"hidden",transition:"border-color .2s"}}>
+    <div style={{background:"#161923",border:`1px solid ${f.aprobado?"#166534":cuadra?"#232840":"#7c3700"}`,borderRadius:12,overflow:"hidden"}}>
       <div style={{background:tratBg,borderBottom:"1px solid #1e2235",padding:"8px 16px",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-        <span style={{fontSize:11,color:"#475569",fontWeight:600,minWidth:24}}>#{(idx+1).toString().padStart(2,"0")}</span>
+        <span style={{fontSize:11,color:"#475569",fontWeight:600}}>#{(idx+1).toString().padStart(2,"0")}</span>
         {docNum&&<span style={{background:"#1e2a3a",color:"#60a5fa",padding:"2px 9px",borderRadius:4,fontFamily:"monospace",fontSize:11,fontWeight:700}}>DocNum:{docNum}</span>}
         <span style={{display:"inline-flex",alignItems:"center",gap:4,background:f.tratamiento==="inventario"?"#1e3a5f":"#2d1b4e",color:tratColor,border:`1px solid ${tratColor}44`,borderRadius:20,padding:"2px 9px",fontSize:11,fontWeight:600}}>
           {f.tratamiento==="inventario"?"📦 Inventario":"📉 Costo/Gasto"}
@@ -577,16 +517,16 @@ function FacturaCard({ f, idx, onUpdate, docNum }) {
         {!cuadra&&<span style={{background:"#3b1f1f",color:"#f87171",border:"1px solid #7c3700",borderRadius:20,padding:"2px 9px",fontSize:11,fontWeight:600}}>⚡ Descuadrado</span>}
         {f.aprobado&&<span style={{background:"#14532d",color:"#86efac",borderRadius:20,padding:"2px 9px",fontSize:11,fontWeight:600}}>✓ Aprobado</span>}
         <div style={{marginLeft:"auto",display:"flex",gap:6}}>
-          <button onClick={()=>setExpandido(e=>!e)} style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",borderRadius:6,padding:"3px 10px",cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>{expandido?"▲":"▼ Asiento"}</button>
-          <button onClick={()=>{ if(!cuadra){alert("El asiento está descuadrado. Revisa antes de aprobar.");return;} onUpdate(f.id,"aprobado",!f.aprobado); }}
-            style={{background:f.aprobado?"#14532d":"#4f7cff",color:f.aprobado?"#86efac":"#fff",border:"none",borderRadius:6,padding:"3px 14px",cursor:"pointer",fontSize:11,fontWeight:700,fontFamily:"inherit"}}>
+          <button onClick={()=>setExpandido(e=>!e)} style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",borderRadius:6,padding:"3px 10px",cursor:"pointer",fontSize:11}}>{expandido?"▲":"▼ Asiento"}</button>
+          <button onClick={()=>{ if(!cuadra){alert("El asiento está descuadrado.");return;} onUpdate(f.id,"aprobado",!f.aprobado); }}
+            style={{background:f.aprobado?"#14532d":"#4f7cff",color:f.aprobado?"#86efac":"#fff",border:"none",borderRadius:6,padding:"3px 14px",cursor:"pointer",fontSize:11,fontWeight:700}}>
             {f.aprobado?"✓ Aprobado":"Aprobar"}
           </button>
         </div>
       </div>
       <div style={{padding:"11px 16px",display:"flex",gap:14,alignItems:"flex-start",flexWrap:"wrap"}}>
         <div style={{flex:2,minWidth:220}}>
-          <div style={{fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:700,fontSize:14,color:"#fff",marginBottom:2}}>{f.razonSocial||f.archivo}</div>
+          <div style={{fontFamily:"sans-serif",fontWeight:700,fontSize:14,color:"#fff",marginBottom:2}}>{f.razonSocial||f.archivo}</div>
           <div style={{display:"flex",gap:12,flexWrap:"wrap",fontSize:11,color:"#64748b"}}>
             {f.nitProveedor&&<span>NIT <span style={{color:"#94a3b8"}}>{f.nitProveedor}</span></span>}
             {f.prefijo&&<span>N° <span style={{color:"#94a3b8"}}>{f.prefijo}</span></span>}
@@ -595,10 +535,10 @@ function FacturaCard({ f, idx, onUpdate, docNum }) {
           {f.ia?.concepto_general&&<div style={{marginTop:4,fontSize:12,color:tratColor,fontStyle:"italic"}}>«{f.ia.concepto_general}»</div>}
         </div>
         <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-          {[{l:"Subtotal",v:f.subtotal,c:"#cbd5e1"},{l:"IVA",v:f.totalIva,c:"#60a5fa"},{l:"Total",v:f.total,c:"#4ade80",big:true},{l:"Neto prov.",v:neto,c:"#fbbf24",big:true}].map(({l,v,c,big})=>(
+          {[{l:"Subtotal",v:f.subtotal,c:"#cbd5e1"},{l:"IVA",v:f.totalIva,c:"#60a5fa"},{l:"Total",v:f.total,c:"#4ade80",big:true},{l:"Neto",v:neto,c:"#fbbf24",big:true}].map(({l,v,c,big})=>(
             <div key={l} style={{background:"#0d101a",borderRadius:7,padding:"6px 10px",textAlign:"center",minWidth:72}}>
               <div style={{fontSize:9,color:"#475569",textTransform:"uppercase",letterSpacing:".06em",marginBottom:2}}>{l}</div>
-              <div style={{fontSize:big?13:11,fontWeight:big?700:500,color:c,fontFamily:"'IBM Plex Sans',sans-serif",whiteSpace:"nowrap"}}>{fmt(v)}</div>
+              <div style={{fontSize:big?13:11,fontWeight:big?700:500,color:c,whiteSpace:"nowrap"}}>{fmt(v)}</div>
             </div>
           ))}
         </div>
@@ -608,8 +548,8 @@ function FacturaCard({ f, idx, onUpdate, docNum }) {
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:9}}>
             <div style={{fontSize:11,color:"#64748b",fontWeight:600,textTransform:"uppercase",letterSpacing:".07em"}}>✏️ Asiento editable</div>
             <div style={{display:"flex",gap:8,alignItems:"center"}}>
-              <span style={{fontSize:11,color:cuadra?"#22c55e":"#f87171",fontWeight:600}}>{cuadra?"✓ Cuadrado":"⚡ Descuadrado"} · Dif:{fmt(Math.abs(totalDeb-totalCre))}</span>
-              {!f.aprobado&&<button onClick={addFila} style={{background:"transparent",border:"1px solid #2d3f6e",color:"#60a5fa",borderRadius:5,padding:"3px 9px",cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>+ Línea</button>}
+              <span style={{fontSize:11,color:cuadra?"#22c55e":"#f87171",fontWeight:600}}>{cuadra?"✓ Cuadrado":"⚡ Descuadrado"}</span>
+              {!f.aprobado&&<button onClick={addFila} style={{background:"transparent",border:"1px solid #2d3f6e",color:"#60a5fa",borderRadius:5,padding:"3px 9px",cursor:"pointer",fontSize:11}}>+ Línea</button>}
             </div>
           </div>
           <div style={{background:"#0d101a",borderRadius:7,overflow:"hidden",border:`1px solid ${cuadra?"#1e2235":"#7c3700"}`}}>
@@ -626,7 +566,7 @@ function FacturaCard({ f, idx, onUpdate, docNum }) {
                   <tr key={r.id} style={{borderBottom:"1px solid #1a1d27",background:r.advertencia?"#1a120022":r.id==="prov"?"#0a0d14":"transparent"}}>
                     <td style={{padding:"6px 9px"}}>
                       {!f.aprobado&&r.editable&&r.id!=="prov"
-                        ? <select value={r.tipo} onChange={e=>updFila(r.id,"tipo",e.target.value)} style={{background:"#1e2235",border:"1px solid #2d3352",color:r.tipo==="debito"?"#4ade80":"#f87171",borderRadius:4,padding:"2px 6px",fontSize:10,fontFamily:"inherit",cursor:"pointer"}}><option value="debito">DÉB</option><option value="credito">CRÉ</option></select>
+                        ? <select value={r.tipo} onChange={e=>updFila(r.id,"tipo",e.target.value)} style={{background:"#1e2235",border:"1px solid #2d3352",color:r.tipo==="debito"?"#4ade80":"#f87171",borderRadius:4,padding:"2px 6px",fontSize:10,cursor:"pointer"}}><option value="debito">DÉB</option><option value="credito">CRÉ</option></select>
                         : <span style={{fontSize:10,fontWeight:700,color:r.tipo==="debito"?"#4ade80":"#f87171",background:r.tipo==="debito"?"#0a2010":"#200a0a",padding:"2px 7px",borderRadius:4}}>{r.tipo==="debito"?"DÉB":"CRÉ"}</span>}
                     </td>
                     <td style={{padding:"6px 9px"}}>
@@ -642,17 +582,17 @@ function FacturaCard({ f, idx, onUpdate, docNum }) {
                     </td>
                     <td style={{padding:"6px 9px",textAlign:"right"}}>
                       {r.tipo==="debito"
-                        ? (!f.aprobado&&r.editable ? <CeldaEditable valor={r.valor} onChange={v=>updFila(r.id,"valor",v)} tipo="number" style={{color:"#4ade80",fontWeight:600,fontFamily:"'IBM Plex Sans',sans-serif",textAlign:"right"}}/> : <span style={{color:"#4ade80",fontWeight:600,fontFamily:"'IBM Plex Sans',sans-serif"}}>{fmt(r.valor)}</span>)
+                        ? (!f.aprobado&&r.editable ? <CeldaEditable valor={r.valor} onChange={v=>updFila(r.id,"valor",v)} tipo="number" style={{color:"#4ade80",fontWeight:600,textAlign:"right"}}/> : <span style={{color:"#4ade80",fontWeight:600}}>{fmt(r.valor)}</span>)
                         : <span style={{color:"#2d3352"}}>—</span>}
                     </td>
                     <td style={{padding:"6px 9px",textAlign:"right"}}>
                       {r.tipo==="credito"
-                        ? (!f.aprobado&&r.editable ? <CeldaEditable valor={r.valor} onChange={v=>updFila(r.id,"valor",v)} tipo="number" style={{color:r.id==="prov"?"#fbbf24":"#f87171",fontWeight:600,fontFamily:"'IBM Plex Sans',sans-serif",textAlign:"right"}}/> : <span style={{color:r.id==="prov"?"#fbbf24":"#f87171",fontWeight:r.id==="prov"?700:600,fontFamily:"'IBM Plex Sans',sans-serif"}}>{fmt(r.valor)}</span>)
+                        ? (!f.aprobado&&r.editable ? <CeldaEditable valor={r.valor} onChange={v=>updFila(r.id,"valor",v)} tipo="number" style={{color:r.id==="prov"?"#fbbf24":"#f87171",fontWeight:600,textAlign:"right"}}/> : <span style={{color:r.id==="prov"?"#fbbf24":"#f87171",fontWeight:r.id==="prov"?700:600}}>{fmt(r.valor)}</span>)
                         : <span style={{color:"#2d3352"}}>—</span>}
                     </td>
                     <td style={{padding:"6px 9px",textAlign:"center"}}>
                       {!f.aprobado&&r.eliminable
-                        ? <button onClick={()=>elimFila(r.id)} style={{background:"transparent",border:"1px solid #3b1f1f",color:"#f87171",borderRadius:4,padding:"2px 7px",cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>🗑</button>
+                        ? <button onClick={()=>elimFila(r.id)} style={{background:"transparent",border:"1px solid #3b1f1f",color:"#f87171",borderRadius:4,padding:"2px 7px",cursor:"pointer",fontSize:11}}>🗑</button>
                         : r.id==="prov" ? <span style={{fontSize:10,color:"#fbbf24"}}>auto</span>
                         : <span style={{fontSize:10,color:f.aprobado?"#22c55e":"#475569"}}>{f.aprobado?"🔒":""}</span>}
                     </td>
@@ -662,14 +602,14 @@ function FacturaCard({ f, idx, onUpdate, docNum }) {
               <tfoot>
                 <tr style={{background:"#131620",borderTop:"2px solid #1e2235"}}>
                   <td colSpan={3} style={{padding:"6px 9px",color:"#64748b",fontSize:11,fontWeight:600}}>TOTALES</td>
-                  <td style={{padding:"6px 9px",textAlign:"right",fontWeight:700,color:"#4ade80",fontFamily:"'IBM Plex Sans',sans-serif",fontSize:12}}>{fmt(totalDeb)}</td>
-                  <td style={{padding:"6px 9px",textAlign:"right",fontWeight:700,color:"#f87171",fontFamily:"'IBM Plex Sans',sans-serif",fontSize:12}}>{fmt(totalCre)}</td>
+                  <td style={{padding:"6px 9px",textAlign:"right",fontWeight:700,color:"#4ade80",fontSize:12}}>{fmt(totalDeb)}</td>
+                  <td style={{padding:"6px 9px",textAlign:"right",fontWeight:700,color:"#f87171",fontSize:12}}>{fmt(totalCre)}</td>
                   <td style={{padding:"6px 9px",textAlign:"center"}}><span style={{fontWeight:700,color:cuadra?"#22c55e":"#f87171"}}>{cuadra?"✓":"✗"}</span></td>
                 </tr>
               </tfoot>
             </table>
           </div>
-          {!f.aprobado&&<div style={{marginTop:7,fontSize:10,color:"#475569"}}>💡 Clic sobre cualquier valor para editar · La línea <strong style={{color:"#fbbf24"}}>Proveedor</strong> se recalcula automáticamente.</div>}
+          {!f.aprobado&&<div style={{marginTop:7,fontSize:10,color:"#475569"}}>💡 Clic sobre cualquier valor para editar · <strong style={{color:"#fbbf24"}}>Proveedor</strong> se recalcula automáticamente.</div>}
         </div>
       )}
     </div>
@@ -681,24 +621,24 @@ function TestPanel({ onCargar }) {
   const lanzar = xmls => onCargar(xmls.map((t,i)=>new File([new Blob([t.xml],{type:"text/xml"})],`test-${i+1}.xml`,{type:"text/xml"})));
   return (
     <div style={{marginTop:10}}>
-      <button onClick={()=>setAbierto(a=>!a)} style={{background:"transparent",border:"1px dashed #2d3f6e",color:"#60a5fa",borderRadius:6,padding:"4px 12px",cursor:"pointer",fontSize:11,fontWeight:600,fontFamily:"inherit"}}>
+      <button onClick={()=>setAbierto(a=>!a)} style={{background:"transparent",border:"1px dashed #2d3f6e",color:"#60a5fa",borderRadius:6,padding:"4px 12px",cursor:"pointer",fontSize:11,fontWeight:600}}>
         🧪 {abierto?"Ocultar":"Panel de pruebas"} {abierto?"▲":"▼"}
       </button>
       {abierto&&(
         <div style={{background:"#0d101a",border:"1px dashed #2d3f6e",borderTop:"none",borderRadius:"0 0 9px 9px",padding:"11px 13px"}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:9}}>
             <span style={{fontSize:10,color:"#475569"}}>4 facturas de prueba con fechas distintas</span>
-            <button onClick={()=>lanzar(FACTURAS_TEST)} style={{background:"#4f7cff",color:"#fff",border:"none",borderRadius:5,padding:"4px 12px",cursor:"pointer",fontSize:11,fontWeight:700,fontFamily:"inherit"}}>▶ Cargar las 4</button>
+            <button onClick={()=>lanzar(FACTURAS_TEST)} style={{background:"#4f7cff",color:"#fff",border:"none",borderRadius:5,padding:"4px 12px",cursor:"pointer",fontSize:11,fontWeight:700}}>▶ Cargar las 4</button>
           </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7}}>
             {FACTURAS_TEST.map(t=>(
               <div key={t.nombre} style={{background:t.color,border:"1px solid #1e2a3a",borderRadius:7,padding:"8px 10px",display:"flex",gap:7,alignItems:"flex-start"}}>
                 <span style={{fontSize:17}}>{t.icono}</span>
                 <div style={{flex:1}}>
-                  <div style={{fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:600,fontSize:12,color:"#e2e8f0"}}>{t.nombre}</div>
+                  <div style={{fontFamily:"sans-serif",fontWeight:600,fontSize:12,color:"#e2e8f0"}}>{t.nombre}</div>
                   <div style={{fontSize:10,color:"#94a3b8",marginTop:1}}>{t.desc}</div>
                 </div>
-                <button onClick={()=>lanzar([t])} style={{background:"transparent",border:"1px solid #2d3f6e",color:"#60a5fa",borderRadius:5,padding:"3px 8px",cursor:"pointer",fontSize:10,fontFamily:"inherit"}}>▶</button>
+                <button onClick={()=>lanzar([t])} style={{background:"transparent",border:"1px solid #2d3f6e",color:"#60a5fa",borderRadius:5,padding:"3px 8px",cursor:"pointer",fontSize:10}}>▶</button>
               </div>
             ))}
           </div>
@@ -755,15 +695,8 @@ export default function App() {
   const fmt = n => `$${Number(n||0).toLocaleString("es-CO")}`;
 
   return (
-    <div style={{fontFamily:"'IBM Plex Mono','Courier New',monospace",background:"#0f1117",minHeight:"100vh",color:"#e2e8f0"}}>
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
-        *{box-sizing:border-box}
-        ::-webkit-scrollbar{width:5px}::-webkit-scrollbar-track{background:#1a1d27}::-webkit-scrollbar-thumb{background:#3a3f5c;border-radius:3px}
-        .dz{border:2px dashed #2d3352;border-radius:14px;padding:44px 24px;text-align:center;transition:all .2s;cursor:pointer}
-        .dz:hover,.dz.over{border-color:#4f7cff;background:rgba(79,124,255,.05)}
-        @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
-      `}</style>
+    <div style={{fontFamily:"monospace",background:"#0f1117",minHeight:"100vh",color:"#e2e8f0"}}>
+      <style>{`*{box-sizing:border-box} ::-webkit-scrollbar{width:5px} ::-webkit-scrollbar-thumb{background:#3a3f5c;border-radius:3px} .dz{border:2px dashed #2d3352;border-radius:14px;padding:44px 24px;text-align:center;transition:all .2s;cursor:pointer} .dz:hover,.dz.over{border-color:#4f7cff;background:rgba(79,124,255,.05)} @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}`}</style>
 
       {modal&&<ModalTratamiento archivos={modal.archivos} onConfirm={confirmarTratamiento} onCancel={()=>setModal(null)}/>}
       {modalExport&&<ModalExport facturas={facturas} onClose={()=>setModalExport(false)}/>}
@@ -772,15 +705,15 @@ export default function App() {
         <div style={{display:"flex",alignItems:"center",gap:11}}>
           <div style={{width:32,height:32,background:"linear-gradient(135deg,#4f7cff,#8b5cf6)",borderRadius:7,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>⚡</div>
           <div>
-            <div style={{fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:700,fontSize:14,color:"#fff"}}>ContaIA DIAN</div>
+            <div style={{fontFamily:"sans-serif",fontWeight:700,fontSize:14,color:"#fff"}}>ContaIA DIAN</div>
             <div style={{fontSize:10,color:"#64748b"}}>Contabilización automática · PUC integrado</div>
           </div>
         </div>
         <div style={{display:"flex",alignItems:"center",gap:10}}>
           <div style={{background:"#0a1a0a",border:"1px solid #166534",borderRadius:5,padding:"4px 10px",fontSize:10,color:"#4ade80",fontWeight:600}}>✓ PUC cargado</div>
           {facturas.length>0&&<div style={{fontSize:11,color:"#64748b"}}><span style={{color:"#4f7cff",fontWeight:700}}>{facturas.filter(f=>!f.error).length}</span> facturas · <span style={{color:"#22c55e",fontWeight:700}}>{aprobadas.length}</span> aprobadas</div>}
-          {aprobadas.length>0&&<button onClick={()=>setModalExport(true)} style={{background:"#22c55e",color:"#fff",border:"none",borderRadius:6,padding:"6px 14px",cursor:"pointer",fontSize:12,fontWeight:700,fontFamily:"inherit"}}>⬇ Exportar Excel</button>}
-          {facturas.length>0&&<button onClick={()=>setFacturas([])} style={{background:"transparent",border:"1px solid #2d3352",color:"#64748b",borderRadius:6,padding:"4px 9px",cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>🗑</button>}
+          {aprobadas.length>0&&<button onClick={()=>setModalExport(true)} style={{background:"#22c55e",color:"#fff",border:"none",borderRadius:6,padding:"6px 14px",cursor:"pointer",fontSize:12,fontWeight:700}}>⬇ Exportar Excel</button>}
+          {facturas.length>0&&<button onClick={()=>setFacturas([])} style={{background:"transparent",border:"1px solid #2d3352",color:"#64748b",borderRadius:6,padding:"4px 9px",cursor:"pointer",fontSize:11}}>🗑</button>}
         </div>
       </div>
 
@@ -792,15 +725,15 @@ export default function App() {
           onClick={()=>document.getElementById("fi").click()}>
           <input id="fi" type="file" multiple accept=".xml,.pdf" style={{display:"none"}} onChange={e=>recibirArchivos(e.target.files)}/>
           {procesando
-            ? <div><div style={{fontSize:28,marginBottom:8,display:"inline-block",animation:"spin 1s linear infinite"}}>⚙️</div><div style={{fontFamily:"'IBM Plex Sans',sans-serif",fontSize:14,color:"#4f7cff",fontWeight:600}}>Procesando con IA…</div></div>
-            : <div><div style={{fontSize:34,marginBottom:8}}>📂</div><div style={{fontFamily:"'IBM Plex Sans',sans-serif",fontSize:14,fontWeight:600,color:"#cbd5e1"}}>Arrastra facturas XML o PDF aquí</div><div style={{fontSize:11,color:"#64748b",marginTop:4}}>Se preguntará el tratamiento antes de procesar</div></div>}
+            ? <div><div style={{fontSize:28,marginBottom:8,display:"inline-block",animation:"spin 1s linear infinite"}}>⚙️</div><div style={{fontFamily:"sans-serif",fontSize:14,color:"#4f7cff",fontWeight:600}}>Procesando con IA…</div></div>
+            : <div><div style={{fontSize:34,marginBottom:8}}>📂</div><div style={{fontFamily:"sans-serif",fontSize:14,fontWeight:600,color:"#cbd5e1"}}>Arrastra facturas XML o PDF aquí</div><div style={{fontSize:11,color:"#64748b",marginTop:4}}>Se preguntará el tratamiento antes de procesar</div></div>}
         </div>
 
         <TestPanel onCargar={recibirArchivos}/>
 
         {facturas.length>0&&(
           <div style={{marginTop:22,display:"flex",flexDirection:"column",gap:12}}>
-            <div style={{fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:700,fontSize:14,color:"#fff"}}>
+            <div style={{fontFamily:"sans-serif",fontWeight:700,fontSize:14,color:"#fff"}}>
               Facturas <span style={{color:"#4f7cff"}}>({facturas.length})</span>
             </div>
             {[...aprobadas,...facturas.filter(f=>!f.aprobado||f.error)].map((f,i)=>(
@@ -808,7 +741,7 @@ export default function App() {
             ))}
             {aprobadas.length>0&&(
               <div style={{background:"#0f1a2e",border:"1px solid #1e3a5f",borderRadius:10,padding:"16px 20px",marginTop:4}}>
-                <div style={{fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:700,fontSize:13,color:"#60a5fa",marginBottom:12}}>📊 Resumen · {aprobadas.length} aprobadas</div>
+                <div style={{fontFamily:"sans-serif",fontWeight:700,fontSize:13,color:"#60a5fa",marginBottom:12}}>📊 Resumen · {aprobadas.length} aprobadas</div>
                 <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:12}}>
                   {[
                     ["Total facturado",fmt(aprobadas.reduce((s,f)=>s+(f.total||0),0)),"#4ade80"],
@@ -818,12 +751,12 @@ export default function App() {
                   ].map(([l,v,c])=>(
                     <div key={l} style={{background:"#0d1520",borderRadius:7,padding:"10px 13px"}}>
                       <div style={{fontSize:9,color:"#64748b",textTransform:"uppercase",letterSpacing:".06em",marginBottom:3}}>{l}</div>
-                      <div style={{fontSize:15,fontWeight:700,color:c,fontFamily:"'IBM Plex Sans',sans-serif"}}>{v}</div>
+                      <div style={{fontSize:15,fontWeight:700,color:c}}>{v}</div>
                     </div>
                   ))}
                 </div>
                 <div style={{display:"flex",justifyContent:"flex-end"}}>
-                  <button onClick={()=>setModalExport(true)} style={{background:"#22c55e",color:"#fff",border:"none",borderRadius:7,padding:"9px 22px",cursor:"pointer",fontSize:13,fontWeight:700,fontFamily:"inherit"}}>⬇ Exportar comprobante Excel</button>
+                  <button onClick={()=>setModalExport(true)} style={{background:"#22c55e",color:"#fff",border:"none",borderRadius:7,padding:"9px 22px",cursor:"pointer",fontSize:13,fontWeight:700}}>⬇ Exportar comprobante Excel</button>
                 </div>
               </div>
             )}
