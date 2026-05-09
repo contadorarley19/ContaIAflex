@@ -222,8 +222,8 @@ async function analizarConIA(datos, tratamiento, tratIva) {
     ? datos.items.map(i=>`- Cant ${i.cantidad} | ${i.descripcion} | $${i.valor.toLocaleString("es-CO")}`).join("\n")
     : "(sin ítems)";
   const instrTrat = tratamiento==="inventario"
-    ? `INVENTARIO: conserva cada ítem por separado. Cuenta principal: 14350501. Una línea por ítem.`
-    : `COSTO/GASTO: resume todos en UN solo concepto. Cuenta principal 6135x o 613x según tipo.`;
+    ? `INVENTARIO: conserva cada ítem por separado. Usa SOLO cuentas 14x. NUNCA uses 61x ni 51x. Cuenta principal: 14350501. Una línea por ítem.`
+    : `COSTO/GASTO: resume en UN solo concepto. Usa SOLO cuentas 61x o 51x. NUNCA uses cuentas 14x. Cuenta principal: 61350501.`;
   const instrIva = tratIva==="descontable"
     ? `IVA → 24081010 "Iva compras"`
     : `IVA → detecta: bienes físicos=61157001 "Iva transitorio compras", servicios=61157002 "Iva de servicios"`;
