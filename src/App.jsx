@@ -1,17 +1,7 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback } from "react";
+import * as XLSX from "xlsx";
 
 const API_URL = "/.netlify/functions/claude";
-
-// Carga SheetJS para exportar xlsx nativo
-function cargarSheetJS() {
-  return new Promise((resolve) => {
-    if (window.XLSX) { resolve(window.XLSX); return; }
-    const s = document.createElement("script");
-    s.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
-    s.onload = () => resolve(window.XLSX);
-    document.head.appendChild(s);
-  });
-}
 
 const PUC_EMPRESA = `plncod	plnnom
 11050501	Caja general
@@ -187,24 +177,19 @@ function parseXMLFactura(xmlText) {
 
 async function callClaude(body) {
   const res = await fetch(API_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body),
   });
-  if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`HTTP ${res.status}: ${txt}`);
-  }
+  if (!res.ok) { const txt=await res.text(); throw new Error(`HTTP ${res.status}: ${txt}`); }
   const data = await res.json();
-  if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+  if (data.error) throw new Error(data.error.message||JSON.stringify(data.error));
   return data;
 }
 
 async function parsePDFFactura(archivo) {
   const base64 = await new Promise((res,rej)=>{
-    const r = new FileReader();
-    r.onload = ()=>res(r.result.split(",")[1]);
-    r.onerror = ()=>rej(new Error("No se pudo leer el PDF"));
+    const r=new FileReader();
+    r.onload=()=>res(r.result.split(",")[1]);
+    r.onerror=()=>rej(new Error("No se pudo leer el PDF"));
     r.readAsDataURL(archivo);
   });
   const data = await callClaude({
@@ -223,15 +208,12 @@ async function analizarConIA(datos, tratamiento, tratIva) {
   const itemsTexto = datos.items?.length
     ? datos.items.map(i=>`- Cant ${i.cantidad} | ${i.descripcion} | $${i.valor.toLocaleString("es-CO")}`).join("\n")
     : "(sin ítems)";
-
   const instrTrat = tratamiento==="inventario"
     ? `INVENTARIO: conserva cada ítem por separado. Usa SOLO cuentas 14x. NUNCA uses 61x ni 51x. Cuenta principal: 14350501. Una línea por ítem.`
     : `COSTO/GASTO: resume en UN solo concepto. Usa SOLO cuentas 61x o 51x. NUNCA uses cuentas 14x. Cuenta principal: 61350501.`;
-
   const instrIva = tratIva==="descontable"
     ? `IVA → cuenta_iva_codigo: "24081010", cuenta_iva_nombre: "Iva compras"`
     : `IVA → detecta tipo: si son bienes físicos usa cuenta_iva_codigo: "61157001" nombre: "Iva transitorio compras". Si son servicios usa cuenta_iva_codigo: "61157002" nombre: "Iva de servicios"`;
-
   const prompt = `Eres contador colombiano experto en PUC. Responde SOLO JSON válido sin texto adicional.
 
 FACTURA:
@@ -253,13 +235,12 @@ RETENCIONES — usa solo estas cuentas del PUC:
 ${instrIva}
 
 REGLAS ESTRICTAS:
-1. lineas_contables debe contener SOLO las cuentas de costo/gasto/inventario (6x, 5x, 14x). 
+1. lineas_contables debe contener SOLO las cuentas de costo/gasto/inventario (6x, 5x, 14x).
 2. NUNCA incluyas cuentas 22x, 23x ni 24x en lineas_contables.
 3. Las cuentas de retención van en cuenta_retefuente_codigo, no en lineas_contables.
 
 Responde con este JSON exacto:
 {"concepto_general":"","tipo_cuenta":"Inventario|Costo|Gasto","retefuente_pct":0,"retefuente_descripcion":"","cuenta_retefuente_codigo":"","cuenta_retefuente_nombre":"","retica_por_mil":0,"advertencia_puc":"","cuenta_iva_codigo":"","cuenta_iva_nombre":"","lineas_contables":[{"descripcion":"","cantidad":1,"valor_base":0,"cuenta_debito_codigo":"","cuenta_debito_nombre":"","sin_cuenta_exacta":false}]}`;
-
   const data = await callClaude({
     model:"claude-sonnet-4-5", max_tokens:2000,
     messages:[{role:"user",content:prompt}],
@@ -273,19 +254,20 @@ function generarFilasContables(factura, docNum, config) {
   const fila = (plnCod, docDet, deb, cre) => ({
     DocNum:docNum, DocFec:factura.fecha||"", TpcCod:tpcCod,
     PlnCod:plnCod, DocDet:docDet, TerNit:factura.nitProveedor||"", CtoCod:ctoCod,
-    DocDeb:deb||"", DocCre:cre||"", PrfCod:prfCod, DocAux:docAux, SubCto:"",
+    DocDeb:deb, DocCre:cre, PrfCod:prfCod, DocAux:docAux, SubCto:"",
   });
   const filas = [];
-  const asiento = factura.asiento;
-  if (asiento?.length) {
-    asiento.forEach(r => filas.push(fila(r.cuenta, r.descripcion, r.tipo==="debito"?r.valor:"", r.tipo==="credito"?r.valor:"")));
+  if (factura.asiento?.length) {
+    factura.asiento.forEach(r => filas.push(fila(
+      r.cuenta, r.descripcion,
+      r.tipo==="debito" ? Number(r.valor) : "",
+      r.tipo==="credito" ? Number(r.valor) : ""
+    )));
   }
   return filas;
 }
 
-async function exportarExcel(facturas, config, soloUna=null) {
-  const XLSX = await cargarSheetJS();
-
+function exportarExcel(facturas, config, soloUna=null) {
   const lista = [...(soloUna ? [soloUna] : facturas.filter(f=>f.aprobado&&!f.error))]
     .sort((a,b)=>(a.fecha||"").localeCompare(b.fecha||""));
 
@@ -295,13 +277,7 @@ async function exportarExcel(facturas, config, soloUna=null) {
   let cons = parseInt(config.docNumInicio)||1;
   lista.forEach(f => {
     generarFilasContables(f, cons, config).forEach(r => {
-      wsData.push(headers.map(h => {
-        const v = r[h]??"";
-        // DocDeb y DocCre como número cuando tienen valor
-        if ((h==="DocDeb"||h==="DocCre") && v!=="") return Number(v);
-        if (h==="DocNum") return Number(v)||v;
-        return String(v);
-      }));
+      wsData.push(headers.map(h => r[h]??""));
     });
     cons++;
   });
@@ -340,18 +316,9 @@ function CeldaEditable({ valor, onChange, tipo="text", style={} }) {
 function ModalExport({ facturas, onClose }) {
   const aprobadas = facturas.filter(f=>f.aprobado&&!f.error).sort((a,b)=>(a.fecha||"").localeCompare(b.fecha||""));
   const [cfg, setCfg] = useState({ docNumInicio:"1", tpcCod:"CO", prfCod:"", docAux:"", ctoCod:"" });
-  const [exportando, setExportando] = useState(false);
   const set = (k,v) => setCfg(p=>({...p,[k]:v}));
   const preview = aprobadas.map((f,i)=>({...f, docNumAsignado:(parseInt(cfg.docNumInicio)||1)+i}));
   const fmt = n => `$${Number(n||0).toLocaleString("es-CO")}`;
-
-  const handleExport = async (soloUna=null) => {
-    setExportando(true);
-    try { await exportarExcel(facturas, cfg, soloUna); }
-    catch(e) { alert("Error al exportar: "+e.message); }
-    finally { setExportando(false); }
-  };
-
   return (
     <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.88)",zIndex:2000,display:"flex",alignItems:"center",justifyContent:"center",padding:16,overflowY:"auto"}}>
       <div style={{background:"#161923",border:"1px solid #232840",borderRadius:16,padding:26,maxWidth:700,width:"100%"}}>
@@ -412,15 +379,15 @@ function ModalExport({ facturas, onClose }) {
           <div style={{display:"flex",flexDirection:"column",gap:5,maxHeight:130,overflowY:"auto",border:"1px solid #1e2235",borderRadius:6,padding:"6px 8px",minWidth:210}}>
             <div style={{fontSize:10,color:"#64748b",fontWeight:600,marginBottom:2}}>📄 Por factura:</div>
             {preview.map(f=>(
-              <button key={f.id} onClick={()=>handleExport(f)} disabled={exportando}
+              <button key={f.id} onClick={()=>exportarExcel(facturas,cfg,f)}
                 style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",borderRadius:5,padding:"3px 9px",cursor:"pointer",fontSize:10,textAlign:"left",whiteSpace:"nowrap"}}>
                 ⬇ {cfg.tpcCod}{f.docNumAsignado} · {f.razonSocial?.slice(0,18)}
               </button>
             ))}
           </div>
-          <button onClick={()=>handleExport()} disabled={aprobadas.length===0||exportando}
-            style={{background:aprobadas.length&&!exportando?"#4f7cff":"#1e2235",color:aprobadas.length&&!exportando?"#fff":"#475569",border:"none",borderRadius:8,padding:"10px 22px",cursor:aprobadas.length&&!exportando?"pointer":"not-allowed",fontSize:13,fontWeight:700}}>
-            {exportando?"Generando...":"⬇ Descargar TODAS ("+aprobadas.length+")"}
+          <button onClick={()=>exportarExcel(facturas,cfg)} disabled={aprobadas.length===0}
+            style={{background:aprobadas.length?"#4f7cff":"#1e2235",color:aprobadas.length?"#fff":"#475569",border:"none",borderRadius:8,padding:"10px 22px",cursor:aprobadas.length?"pointer":"not-allowed",fontSize:13,fontWeight:700}}>
+            ⬇ Descargar TODAS ({aprobadas.length})
           </button>
         </div>
       </div>
@@ -493,7 +460,6 @@ function ModalTratamiento({ archivos, onConfirm, onCancel }) {
   );
 }
 
-// ─── CARD FACTURA ─────────────────────────────────────────────────────────────
 function FacturaCard({ f, idx, onUpdate, docNum }) {
   const [expandido, setExpandido] = useState(true);
   const fmt = n => `$${Number(n||0).toLocaleString("es-CO")}`;
@@ -501,75 +467,46 @@ function FacturaCard({ f, idx, onUpdate, docNum }) {
   const construirAsiento = () => {
     if (!f.ia) return [];
     const filas = [];
-
-    // 1. DÉBITOS — agrupar por cuenta sumando valores
     const mapaLineas = new Map();
     (f.ia.lineas_contables||[]).forEach(l => {
       const cta = l.cuenta_debito_codigo||"";
       if (!cta) return;
-      if (cta.startsWith("22") || cta.startsWith("23") || cta.startsWith("24")) return;
-      if (cta === f.ia.cuenta_iva_codigo) return;
-      if (mapaLineas.has(cta)) {
-        const e = mapaLineas.get(cta);
-        e.valor_base += (l.valor_base||0);
-        if (l.sin_cuenta_exacta) e.sin_cuenta_exacta = true;
-      } else {
-        mapaLineas.set(cta, { ...l, valor_base: l.valor_base||0 });
-      }
+      if (cta.startsWith("22")||cta.startsWith("23")||cta.startsWith("24")) return;
+      if (cta===f.ia.cuenta_iva_codigo) return;
+      if (mapaLineas.has(cta)) { const e=mapaLineas.get(cta); e.valor_base+=(l.valor_base||0); if(l.sin_cuenta_exacta)e.sin_cuenta_exacta=true; }
+      else mapaLineas.set(cta,{...l,valor_base:l.valor_base||0});
     });
-    let lcIdx = 0;
-    mapaLineas.forEach((l, cta) => {
-      filas.push({ id:`lc${lcIdx++}`, tipo:"debito", descripcion:l.descripcion, valor:l.valor_base, cuenta:cta, editable:true, eliminable:true, advertencia:!!l.sin_cuenta_exacta });
-    });
-
-    // 2. IVA (DÉBITO)
-    if ((f.totalIva||0) > 0 && f.ia.cuenta_iva_codigo) {
-      filas.push({ id:"iva", tipo:"debito", descripcion:f.ia.cuenta_iva_nombre||"IVA", valor:f.totalIva, cuenta:f.ia.cuenta_iva_codigo, editable:true, eliminable:true, advertencia:false });
-    }
-
-    // 3. ReteFuente (CRÉDITO)
-    if (!f.esAutorretenedor && (f.retefuente||0) > 0 && f.ia.cuenta_retefuente_codigo) {
-      filas.push({ id:"rete", tipo:"credito", descripcion:f.ia.retefuente_descripcion||"Retención en la fuente", valor:f.retefuente, cuenta:f.ia.cuenta_retefuente_codigo, editable:true, eliminable:true, advertencia:false });
-    }
-
-    // 4. ReteICA (CRÉDITO)
-    if ((f.retica||0) > 0) {
-      filas.push({ id:"retica", tipo:"credito", descripcion:"Retención industria y comercio", valor:f.retica, cuenta:"13551801", editable:true, eliminable:true, advertencia:false });
-    }
-
-    // 5. Proveedor (CRÉDITO) — siempre al final, inicialmente automático
-    const totalDeb = filas.filter(r=>r.tipo==="debito").reduce((s,r)=>s+r.valor,0);
-    const totalCre = filas.filter(r=>r.tipo==="credito").reduce((s,r)=>s+r.valor,0);
-    filas.push({ id:"prov", tipo:"credito", descripcion:`Proveedor — ${(f.razonSocial||"").slice(0,40)}`, valor:Math.max(0,totalDeb-totalCre), cuenta:"22050101", editable:true, eliminable:false, advertencia:false, editadoManual:false });
-
+    let lcIdx=0;
+    mapaLineas.forEach((l,cta)=>filas.push({id:`lc${lcIdx++}`,tipo:"debito",descripcion:l.descripcion,valor:l.valor_base,cuenta:cta,editable:true,eliminable:true,advertencia:!!l.sin_cuenta_exacta}));
+    if ((f.totalIva||0)>0&&f.ia.cuenta_iva_codigo)
+      filas.push({id:"iva",tipo:"debito",descripcion:f.ia.cuenta_iva_nombre||"IVA",valor:f.totalIva,cuenta:f.ia.cuenta_iva_codigo,editable:true,eliminable:true,advertencia:false});
+    if (!f.esAutorretenedor&&(f.retefuente||0)>0&&f.ia.cuenta_retefuente_codigo)
+      filas.push({id:"rete",tipo:"credito",descripcion:f.ia.retefuente_descripcion||"Retención en la fuente",valor:f.retefuente,cuenta:f.ia.cuenta_retefuente_codigo,editable:true,eliminable:true,advertencia:false});
+    if ((f.retica||0)>0)
+      filas.push({id:"retica",tipo:"credito",descripcion:"Retención industria y comercio",valor:f.retica,cuenta:"13551801",editable:true,eliminable:true,advertencia:false});
+    const deb=filas.filter(r=>r.tipo==="debito").reduce((s,r)=>s+r.valor,0);
+    const cre=filas.filter(r=>r.tipo==="credito").reduce((s,r)=>s+r.valor,0);
+    filas.push({id:"prov",tipo:"credito",descripcion:`Proveedor — ${(f.razonSocial||"").slice(0,40)}`,valor:Math.max(0,deb-cre),cuenta:"22050101",editable:true,eliminable:false,advertencia:false,editadoManual:false});
     return filas;
   };
 
-  const [filas, setFilas] = useState(() => f.asiento || construirAsiento());
-
-  const recalcProv = (fs) => {
-    const deb = fs.filter(r=>r.tipo==="debito").reduce((s,r)=>s+r.valor,0);
-    const cre = fs.filter(r=>r.tipo==="credito"&&r.id!=="prov").reduce((s,r)=>s+r.valor,0);
+  const [filas, setFilas] = useState(()=>f.asiento||construirAsiento());
+  const recalcProv = fs => {
+    const deb=fs.filter(r=>r.tipo==="debito").reduce((s,r)=>s+r.valor,0);
+    const cre=fs.filter(r=>r.tipo==="credito"&&r.id!=="prov").reduce((s,r)=>s+r.valor,0);
     return fs.map(r=>r.id==="prov"&&!r.editadoManual?{...r,valor:Math.max(0,deb-cre)}:r);
   };
-
-  const updFila = (id,campo,valor) => {
-    const n=recalcProv(filas.map(r=>r.id===id?{...r,[campo]:valor,editadoManual:id==="prov"?true:r.editadoManual}:r));
-    setFilas(n); onUpdate(f.id,"asiento",n);
-  };
+  const updFila = (id,campo,valor) => { const n=recalcProv(filas.map(r=>r.id===id?{...r,[campo]:valor,editadoManual:id==="prov"?true:r.editadoManual}:r)); setFilas(n); onUpdate(f.id,"asiento",n); };
   const elimFila = id => { const n=recalcProv(filas.filter(r=>r.id!==id)); setFilas(n); onUpdate(f.id,"asiento",n); };
-  const addFila = () => {
-    const n=recalcProv([...filas.filter(r=>r.id!=="prov"),{id:`x${Date.now()}`,tipo:"debito",descripcion:"Nueva línea",valor:0,cuenta:"",editable:true,eliminable:true,advertencia:true},...filas.filter(r=>r.id==="prov")]);
-    setFilas(n); onUpdate(f.id,"asiento",n);
-  };
+  const addFila = () => { const n=recalcProv([...filas.filter(r=>r.id!=="prov"),{id:`x${Date.now()}`,tipo:"debito",descripcion:"Nueva línea",valor:0,cuenta:"",editable:true,eliminable:true,advertencia:true},...filas.filter(r=>r.id==="prov")]); setFilas(n); onUpdate(f.id,"asiento",n); };
 
-  const totalDeb = filas.filter(r=>r.tipo==="debito").reduce((s,r)=>s+r.valor,0);
-  const totalCre = filas.filter(r=>r.tipo==="credito").reduce((s,r)=>s+r.valor,0);
-  const cuadra   = Math.abs(totalDeb-totalCre)<1;
-  const neto     = filas.find(r=>r.id==="prov")?.valor||0;
-  const hayAdv   = filas.some(r=>r.advertencia);
-  const tratColor= f.tratamiento==="inventario"?"#60a5fa":"#c084fc";
-  const tratBg   = f.tratamiento==="inventario"?"#0e1825":"#120e1f";
+  const totalDeb=filas.filter(r=>r.tipo==="debito").reduce((s,r)=>s+r.valor,0);
+  const totalCre=filas.filter(r=>r.tipo==="credito").reduce((s,r)=>s+r.valor,0);
+  const cuadra=Math.abs(totalDeb-totalCre)<1;
+  const neto=filas.find(r=>r.id==="prov")?.valor||0;
+  const hayAdv=filas.some(r=>r.advertencia);
+  const tratColor=f.tratamiento==="inventario"?"#60a5fa":"#c084fc";
+  const tratBg=f.tratamiento==="inventario"?"#0e1825":"#120e1f";
 
   if (f.error) return (
     <div style={{background:"#1a0a0a",border:"1px solid #3b1f1f",borderRadius:10,padding:"12px 18px",display:"flex",gap:10,alignItems:"center"}}>
@@ -598,7 +535,6 @@ function FacturaCard({ f, idx, onUpdate, docNum }) {
           </button>
         </div>
       </div>
-
       <div style={{padding:"11px 16px",display:"flex",gap:14,alignItems:"flex-start",flexWrap:"wrap"}}>
         <div style={{flex:2,minWidth:220}}>
           <div style={{fontFamily:"sans-serif",fontWeight:700,fontSize:14,color:"#fff",marginBottom:2}}>{f.razonSocial||f.archivo}</div>
@@ -618,7 +554,6 @@ function FacturaCard({ f, idx, onUpdate, docNum }) {
           ))}
         </div>
       </div>
-
       {expandido&&f.ia&&(
         <div style={{borderTop:"1px solid #1e2235",padding:"12px 16px",background:"#0f1117"}}>
           <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:9}}>
@@ -658,12 +593,12 @@ function FacturaCard({ f, idx, onUpdate, docNum }) {
                     </td>
                     <td style={{padding:"6px 9px",textAlign:"right"}}>
                       {r.tipo==="debito"
-                        ? (!f.aprobado&&r.editable ? <CeldaEditable valor={r.valor} onChange={v=>updFila(r.id,"valor",v)} tipo="number" style={{color:"#4ade80",fontWeight:600,textAlign:"right"}}/> : <span style={{color:"#4ade80",fontWeight:600}}>{fmt(r.valor)}</span>)
+                        ? (!f.aprobado&&r.editable?<CeldaEditable valor={r.valor} onChange={v=>updFila(r.id,"valor",v)} tipo="number" style={{color:"#4ade80",fontWeight:600,textAlign:"right"}}/>:<span style={{color:"#4ade80",fontWeight:600}}>{fmt(r.valor)}</span>)
                         : <span style={{color:"#2d3352"}}>—</span>}
                     </td>
                     <td style={{padding:"6px 9px",textAlign:"right"}}>
                       {r.tipo==="credito"
-                        ? (!f.aprobado&&r.editable ? <CeldaEditable valor={r.valor} onChange={v=>updFila(r.id,"valor",v)} tipo="number" style={{color:r.id==="prov"?"#fbbf24":"#f87171",fontWeight:600,textAlign:"right"}}/> : <span style={{color:r.id==="prov"?"#fbbf24":"#f87171",fontWeight:r.id==="prov"?700:600}}>{fmt(r.valor)}</span>)
+                        ? (!f.aprobado&&r.editable?<CeldaEditable valor={r.valor} onChange={v=>updFila(r.id,"valor",v)} tipo="number" style={{color:r.id==="prov"?"#fbbf24":"#f87171",fontWeight:600,textAlign:"right"}}/>:<span style={{color:r.id==="prov"?"#fbbf24":"#f87171",fontWeight:r.id==="prov"?700:600}}>{fmt(r.valor)}</span>)
                         : <span style={{color:"#2d3352"}}>—</span>}
                     </td>
                     <td style={{padding:"6px 9px",textAlign:"center"}}>
@@ -732,9 +667,6 @@ export default function App() {
   const [modalExport, setModalExport] = useState(false);
   const [docNumInicio]                = useState("1");
 
-  // Pre-carga SheetJS al iniciar
-  useEffect(() => { cargarSheetJS(); }, []);
-
   const recibirArchivos = useCallback(lista => {
     const v = Array.from(lista).filter(f=>f.name.endsWith(".xml")||f.name.endsWith(".pdf"));
     if (v.length) setModal({ archivos:v });
@@ -777,10 +709,8 @@ export default function App() {
   return (
     <div style={{fontFamily:"monospace",background:"#0f1117",minHeight:"100vh",color:"#e2e8f0"}}>
       <style>{`*{box-sizing:border-box} ::-webkit-scrollbar{width:5px} ::-webkit-scrollbar-thumb{background:#3a3f5c;border-radius:3px} .dz{border:2px dashed #2d3352;border-radius:14px;padding:44px 24px;text-align:center;transition:all .2s;cursor:pointer} .dz:hover,.dz.over{border-color:#4f7cff;background:rgba(79,124,255,.05)} @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}`}</style>
-
       {modal&&<ModalTratamiento archivos={modal.archivos} onConfirm={confirmarTratamiento} onCancel={()=>setModal(null)}/>}
       {modalExport&&<ModalExport facturas={facturas} onClose={()=>setModalExport(false)}/>}
-
       <div style={{background:"#0d101a",borderBottom:"1px solid #1e2235",padding:"12px 24px",display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
         <div style={{display:"flex",alignItems:"center",gap:11}}>
           <div style={{width:32,height:32,background:"linear-gradient(135deg,#4f7cff,#8b5cf6)",borderRadius:7,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>⚡</div>
@@ -796,7 +726,6 @@ export default function App() {
           {facturas.length>0&&<button onClick={()=>setFacturas([])} style={{background:"transparent",border:"1px solid #2d3352",color:"#64748b",borderRadius:6,padding:"4px 9px",cursor:"pointer",fontSize:11}}>🗑</button>}
         </div>
       </div>
-
       <div style={{maxWidth:1040,margin:"0 auto",padding:"24px 16px"}}>
         <div className="dz"
           onDragOver={e=>{e.preventDefault();e.currentTarget.classList.add("over")}}
@@ -808,14 +737,10 @@ export default function App() {
             ? <div><div style={{fontSize:28,marginBottom:8,display:"inline-block",animation:"spin 1s linear infinite"}}>⚙️</div><div style={{fontFamily:"sans-serif",fontSize:14,color:"#4f7cff",fontWeight:600}}>Procesando con IA…</div></div>
             : <div><div style={{fontSize:34,marginBottom:8}}>📂</div><div style={{fontFamily:"sans-serif",fontSize:14,fontWeight:600,color:"#cbd5e1"}}>Arrastra facturas XML o PDF aquí</div><div style={{fontSize:11,color:"#64748b",marginTop:4}}>Se preguntará el tratamiento antes de procesar</div></div>}
         </div>
-
         <TestPanel onCargar={recibirArchivos}/>
-
         {facturas.length>0&&(
           <div style={{marginTop:22,display:"flex",flexDirection:"column",gap:12}}>
-            <div style={{fontFamily:"sans-serif",fontWeight:700,fontSize:14,color:"#fff"}}>
-              Facturas <span style={{color:"#4f7cff"}}>({facturas.length})</span>
-            </div>
+            <div style={{fontFamily:"sans-serif",fontWeight:700,fontSize:14,color:"#fff"}}>Facturas <span style={{color:"#4f7cff"}}>({facturas.length})</span></div>
             {[...aprobadas,...facturas.filter(f=>!f.aprobado||f.error)].map((f,i)=>(
               <FacturaCard key={f.id} f={f} idx={facturas.indexOf(f)} onUpdate={upd} docNum={f.aprobado&&!f.error?getDocNum(f.id):null}/>
             ))}
