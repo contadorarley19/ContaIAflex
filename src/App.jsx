@@ -528,7 +528,7 @@ function FacturaCard({ f, idx, onUpdate, docNum }) {
   const recalcProv = (fs) => {
     const deb = fs.filter(r=>r.tipo==="debito").reduce((s,r)=>s+r.valor,0);
     const cre = fs.filter(r=>r.tipo==="credito"&&r.id!=="prov").reduce((s,r)=>s+r.valor,0);
-    return fs.map(r=>r.id==="prov"?{...r,valor:Math.max(0,deb-cre)}:r);
+    return fs.map(r=>r.id==="prov"&&!r.editadoManual?{...r,valor:Math.max(0,deb-cre)}:r);
   };
 
   const updFila = (id,campo,valor) => { const n=recalcProv(filas.map(r=>r.id===id?{...r,[campo]:valor}:r)); setFilas(n); onUpdate(f.id,"asiento",n); };
