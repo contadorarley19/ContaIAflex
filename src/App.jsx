@@ -331,7 +331,7 @@ function ModalConfig({ config, onClose }) {
                       onKeyDown={e=>{ if(e.key==="Enter") agregarEmpresa(); }}
                     />
                     {errNueva&&<div style={{fontSize:11,color:"#f87171",marginBottom:6}}>{errNueva}</div>}
-                    <div style={{display:"flex",gap:6"}}>
+                    <div style={{display:"flex",gap:6}}>
                       <button onClick={agregarEmpresa} style={{...s.btn(),flex:1,padding:"6px"}}>Agregar</button>
                       <button onClick={()=>{setMostrarFormNueva(false);setNuevaNit("");setNuevaNombre("");setErrNueva("");}} style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",borderRadius:6,padding:"6px 10px",cursor:"pointer",fontSize:12}}>✕</button>
                     </div>
