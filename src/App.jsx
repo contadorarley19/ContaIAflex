@@ -282,6 +282,84 @@ function useTerceros() {
   return { terceros, upsertTercero, updateTercero, deleteTercero, exportarTercerosXLSX };
 }
 
+// ─── HOOK: aprendizaje de cuentas ────────────────────────────────────────────
+// Guarda en Blobs: cuando el usuario cambia una cuenta manualmente y aprueba,
+// aprende la relación {palabraClave → cuenta} para sugerirla en el futuro
+function useAprendizaje() {
+  const [memoria, setMemoria] = useState({}); // {palabra_clave: {codigo, nombre, veces}}
+
+  useEffect(() => {
+    (async () => {
+      const m = await cfgGet("aprendizaje");
+      if (m) setMemoria(m);
+    })();
+  }, []);
+
+  // Registrar corrección manual: descripción del ítem → cuenta elegida
+  const registrar = async (descripcion, cuentaCodigo, cuentaNombre) => {
+    if (!descripcion || !cuentaCodigo) return;
+    // Extraer palabras clave de la descripción (más de 4 letras)
+    const palabras = descripcion.toLowerCase()
+      .replace(/[^a-záéíóúñ\s]/gi, " ")
+      .split(/\s+/)
+      .filter(p => p.length > 4);
+
+    setMemoria(prev => {
+      const next = {...prev};
+      palabras.forEach(p => {
+        if (!next[p]) next[p] = {codigo:cuentaCodigo, nombre:cuentaNombre, veces:0};
+        // Si ya existe para esa palabra, actualizar si es la misma cuenta o si tiene más votos
+        if (next[p].codigo === cuentaCodigo) {
+          next[p] = {...next[p], veces: next[p].veces + 1};
+        } else if (next[p].veces < 2) {
+          // Reemplazar si la cuenta anterior tenía pocas apariciones
+          next[p] = {codigo:cuentaCodigo, nombre:cuentaNombre, veces:1};
+        }
+      });
+      cfgSet("aprendizaje", next);
+      return next;
+    });
+  };
+
+  // Obtener sugerencias para un texto dado
+  const sugerir = (descripcion) => {
+    if (!descripcion || Object.keys(memoria).length === 0) return null;
+    const palabras = descripcion.toLowerCase()
+      .replace(/[^a-záéíóúñ\s]/gi, " ")
+      .split(/\s+/)
+      .filter(p => p.length > 4);
+    
+    const votos = {};
+    palabras.forEach(p => {
+      if (memoria[p]) {
+        const key = memoria[p].codigo;
+        if (!votos[key]) votos[key] = {...memoria[p], score:0};
+        votos[key].score += memoria[p].veces;
+      }
+    });
+    
+    const ganador = Object.values(votos).sort((a,b)=>b.score-a.score)[0];
+    return ganador && ganador.score >= 2 ? ganador : null;
+  };
+
+  // Construir contexto para el prompt de la IA
+  const contextoParaPrompt = (descripcionesItems) => {
+    const sugerencias = [];
+    descripcionesItems.forEach(desc => {
+      const s = sugerir(desc);
+      if (s) sugerencias.push(`"${desc}" → cuenta ${s.codigo} (${s.nombre}), usado ${s.veces} veces`);
+    });
+    return sugerencias.length > 0
+      ? `
+HISTORIAL DE CUENTAS APROBADAS (usa como referencia preferente):
+${sugerencias.join("
+")}`
+      : "";
+  };
+
+  return { memoria, registrar, sugerir, contextoParaPrompt };
+}
+
 // ─── MODAL CONFIGURACIÓN ─────────────────────────────────────────────────────
 function ModalConfig({ config, onClose }) {
   const { puc, retenciones, autoRet, empresas, empresaActual,
@@ -562,8 +640,11 @@ function ModalConfig({ config, onClose }) {
               </div>
               <div style={{background:"#0d101a",borderRadius:8,border:"1px solid #1e2235",overflow:"hidden"}}>
                 <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                  <div style={{fontSize:11,color:"#475569",marginBottom:8,background:"#0d101a",border:"1px solid #1e2235",borderRadius:6,padding:"8px 12px"}}>
+                    💡 La tarifa y base son solo referencia informativa. La IA busca la cuenta de retención en el PUC de cada empresa.
+                  </div>
                   <thead><tr style={{background:"#131620"}}>
-                    {["Concepto","Tarifa %","Base mínima $","Cuenta PUC",""].map(h=>(
+                    {["Concepto","Tarifa %","Base mínima $",""].map(h=>(
                       <th key={h} style={{padding:"7px 10px",textAlign:"left",color:"#475569",fontSize:10,fontWeight:600,borderBottom:"1px solid #1e2235"}}>{h}</th>
                     ))}
                   </tr></thead>
@@ -573,7 +654,6 @@ function ModalConfig({ config, onClose }) {
                         <td style={{padding:"5px 10px"}}><input value={r.concepto} onChange={e=>{const n=[...retLocal];n[i]={...r,concepto:e.target.value};setRetLocal(n);}} style={{...s.input,width:"100%"}}/></td>
                         <td style={{padding:"5px 10px"}}><input type="number" value={r.tarifa} onChange={e=>{const n=[...retLocal];n[i]={...r,tarifa:parseFloat(e.target.value)||0};setRetLocal(n);}} style={{...s.input,width:70}}/></td>
                         <td style={{padding:"5px 10px"}}><input type="number" value={r.base} onChange={e=>{const n=[...retLocal];n[i]={...r,base:parseFloat(e.target.value)||0};setRetLocal(n);}} style={{...s.input,width:110}}/></td>
-                        <td style={{padding:"5px 10px"}}><input value={r.cuenta} onChange={e=>{const n=[...retLocal];n[i]={...r,cuenta:e.target.value};setRetLocal(n);}} style={{...s.input,width:100,fontFamily:"monospace"}}/></td>
                         <td style={{padding:"5px 10px",textAlign:"center"}}>
                           <button onClick={()=>setRetLocal(r=>r.filter((_,j)=>j!==i))} style={{background:"transparent",border:"1px solid #3b1f1f",color:"#f87171",borderRadius:4,padding:"2px 7px",cursor:"pointer",fontSize:11}}>🗑</button>
                         </td>
@@ -663,6 +743,7 @@ function parseXMLFactura(xmlText) {
     }));
     // schemeID del CompanyID: 31=NIT/Jurídica, 13=Cédula/Natural
     const schemeID = gfa(supplier,"CompanyID","schemeID") || getAttr("CompanyID","schemeID");
+    const rnd = v => Math.round(parseFloat(v||"0"));
     return {
       prefijo:get("ID"), fecha:get("IssueDate"),
       nitProveedor:gf(supplier,"CompanyID")||get("CompanyID"),
@@ -672,10 +753,10 @@ function parseXMLFactura(xmlText) {
       email:gf(supplier,"ElectronicMail"),
       taxLevelCode:gf(supplier,"TaxLevelCode"),
       schemeID,
-      subtotal:parseFloat(get("LineExtensionAmount")||"0"),
-      totalIva:parseFloat(get("TaxAmount")||"0"),
-      total:parseFloat(get("PayableAmount")||"0"),
-      items,
+      subtotal:rnd(get("LineExtensionAmount")),
+      totalIva:rnd(get("TaxAmount")),
+      total:rnd(get("PayableAmount")),
+      items: items.map(i=>({...i, valor:Math.round(i.valor)})),
     };
   } catch { return null; }
 }
@@ -702,16 +783,29 @@ async function parsePDFFactura(archivo) {
   const base64 = await new Promise((res,rej)=>{ const r=new FileReader(); r.onload=()=>res(r.result.split(",")[1]); r.onerror=()=>rej(new Error("No se pudo leer el PDF")); r.readAsDataURL(archivo); });
   const data = await callClaude({ model:"claude-sonnet-4-5", max_tokens:1500, messages:[{role:"user",content:[{type:"document",source:{type:"base64",media_type:"application/pdf",data:base64}},{type:"text",text:`Lee esta factura y extrae los datos. Responde SOLO JSON sin markdown.\nFormato: {"prefijo":"","fecha":"YYYY-MM-DD","nitProveedor":"solo números","razonSocial":"","direccion":"","ciudad":"","departamento":"","subtotal":0,"totalIva":0,"total":0,"items":[{"descripcion":"","cantidad":1,"valor":0}]}`}]}] });
   const text = data.content?.map(b=>b.text||"").join("").replace(/```json|```/g,"").trim();
-  return JSON.parse(text);
+  const r = JSON.parse(text);
+  // Redondear al peso más cercano
+  const rnd = v => Math.round(parseFloat(v||0));
+  return {...r, subtotal:rnd(r.subtotal), totalIva:rnd(r.totalIva), total:rnd(r.total),
+    items:(r.items||[]).map(i=>({...i, valor:Math.round(parseFloat(i.valor||0))}))};
 }
 
-async function analizarConIA(datos, tratamiento, tratIva, puc, retenciones=[]) {
+async function analizarConIA(datos, tratamiento, tratIva, puc, retenciones=[], contextoAprendizaje="") {
   const pucTexto = puc.map(([c,n])=>`${c}\t${n}`).join("\n");
   const itemsTexto = datos.items?.length ? datos.items.map(i=>`- Cant ${i.cantidad} | ${i.descripcion} | $${i.valor.toLocaleString("es-CO")}`).join("\n") : "(sin ítems)";
-  // Instrucción de tratamiento — sin cuentas hardcodeadas, la IA busca en el PUC
+  // Instrucción de tratamiento — la IA elige la cuenta analizando los ítems
   const instrTrat = tratamiento==="inventario"
-    ? `INVENTARIO: registra cada ítem de la factura por separado. Busca en el PUC de la empresa la cuenta auxiliar (8 dígitos) que mejor describa cada ítem. Usa cuentas 14x (inventario/activos). NUNCA uses cuentas 6x ni 5x. Si no hay cuenta exacta marca sin_cuenta_exacta:true.`
-    : `COSTO/GASTO: resume en UN solo concepto general. Busca en el PUC de la empresa la cuenta auxiliar (8 dígitos) que mejor describa el gasto según los ítems de la factura. Usa cuentas 6x o 5x. NUNCA uses cuentas 14x. Analiza la descripción de los ítems para elegir la cuenta más específica del PUC.`;
+    ? `TRATAMIENTO: INVENTARIO.
+- Registra cada ítem de la factura por separado como una línea en lineas_contables.
+- Para cada ítem analiza su descripción y busca en el PUC la cuenta auxiliar (8 dígitos) que mejor corresponda.
+- Solo usar cuentas clase 1 (activos/inventario) del PUC. NUNCA cuentas clase 5, 6.
+- Si no existe cuenta exacta, elige la más cercana y marca sin_cuenta_exacta:true.`
+    : `TRATAMIENTO: COSTO O GASTO.
+- Resume todos los ítems en UN solo concepto contable.
+- Analiza qué tipo de gasto o costo representa la factura (transporte, honorarios, materiales, servicios, combustible, mantenimiento, etc.).
+- Busca en el PUC la cuenta auxiliar (8 dígitos) clase 5 o 6 que mejor describa ese tipo de gasto/costo.
+- NUNCA uses cuentas clase 1 (activos).
+- Elige la cuenta más específica disponible en el PUC según la naturaleza del gasto. No uses siempre la misma cuenta.`;
 
   // Instrucción IVA — buscar en el PUC, no hardcodear
   const instrIva = tratIva==="descontable"
@@ -746,6 +840,8 @@ IMPORTANTE retenciones:
 
 IVA:
 ${instrIva}
+
+${contextoAprendizaje}
 
 REGLAS ESTRICTAS:
 1. SOLO usa cuentas que existen en el PUC de la empresa listado arriba. Nunca inventes códigos.
@@ -923,7 +1019,7 @@ function ModalTratamiento({ archivos, empresaActual, empresas, onEmpresa, onConf
 }
 
 
-function FacturaCard({ f, idx, onUpdate, docNum }) {
+function FacturaCard({ f, idx, onUpdate, docNum, onAprender }) {
   const [expandido, setExpandido] = useState(true);
   const fmt = n => `$${Number(n||0).toLocaleString("es-CO")}`;
 
@@ -978,7 +1074,16 @@ function FacturaCard({ f, idx, onUpdate, docNum }) {
         {f.aprobado&&<span style={{background:"#14532d",color:"#86efac",borderRadius:20,padding:"2px 9px",fontSize:11,fontWeight:600}}>✓ Aprobado</span>}
         <div style={{marginLeft:"auto",display:"flex",gap:6}}>
           <button onClick={()=>setExpandido(e=>!e)} style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",borderRadius:6,padding:"3px 10px",cursor:"pointer",fontSize:11}}>{expandido?"▲":"▼ Asiento"}</button>
-          <button onClick={()=>{ if(!cuadra){alert("El asiento está descuadrado. Revisa antes de aprobar.");return;} onUpdate(f.id,"asiento",filas); onUpdate(f.id,"aprobado",!f.aprobado); }} style={{background:f.aprobado?"#14532d":"#4f7cff",color:f.aprobado?"#86efac":"#fff",border:"none",borderRadius:6,padding:"3px 14px",cursor:"pointer",fontSize:11,fontWeight:700}}>{f.aprobado?"✓ Aprobado":"Aprobar"}</button>
+          <button onClick={()=>{ 
+            if(!cuadra){alert("El asiento está descuadrado. Revisa antes de aprobar.");return;}
+            // Si está aprobando (no des-aprobando), registrar cuentas para aprendizaje
+            if(!f.aprobado && onAprender) {
+              filas.filter(r=>r.tipo==="debito"&&r.cuenta&&r.descripcion).forEach(r=>{
+                onAprender(r.descripcion, r.cuenta, "");
+              });
+            }
+            onUpdate(f.id,"asiento",filas); onUpdate(f.id,"aprobado",!f.aprobado); 
+          }} style={{background:f.aprobado?"#14532d":"#4f7cff",color:f.aprobado?"#86efac":"#fff",border:"none",borderRadius:6,padding:"3px 14px",cursor:"pointer",fontSize:11,fontWeight:700}}>{f.aprobado?"✓ Aprobado":"Aprobar"}</button>
         </div>
       </div>
       <div style={{padding:"11px 16px",display:"flex",gap:14,alignItems:"flex-start",flexWrap:"wrap"}}>
@@ -1274,6 +1379,7 @@ export default function App() {
   const auth = useAuth();
   const { logueado, usuarioActual, login, logout } = auth;
   const { terceros, upsertTercero, updateTercero, deleteTercero, exportarTercerosXLSX } = useTerceros();
+  const { registrar: registrarAprendizaje, contextoParaPrompt } = useAprendizaje();
 
   const [facturas, setFacturas]       = useState([]);
   const [modal, setModal]             = useState(null);
@@ -1302,7 +1408,9 @@ export default function App() {
           let datos = {};
           if (archivo.name.toLowerCase().endsWith(".pdf")) datos = await parsePDFFactura(archivo);
           else { const t=await archivo.text(); datos=parseXMLFactura(t)||{}; }
-          const ia = await analizarConIA(datos, tratamiento, tratIva, puc, retenciones);
+          const descripciones = (datos.items||[]).map(i=>i.descripcion).filter(Boolean);
+          const contextoAprendizaje = contextoParaPrompt(descripciones);
+          const ia = await analizarConIA(datos, tratamiento, tratIva, puc, retenciones, contextoAprendizaje);
           const nit = (datos.nitProveedor||"").replace(/[^0-9]/g,"");
           const esA = !!autoRet[nit];
           // Guardar/actualizar tercero automáticamente
@@ -1425,7 +1533,7 @@ export default function App() {
               {empresaActual&&<span style={{fontSize:11,color:"#64748b",fontWeight:400,marginLeft:10}}>· {empresaActual.nombre}</span>}
             </div>
             {[...aprobadas,...facturas.filter(f=>!f.aprobado||f.error)].map((f,i)=>(
-              <FacturaCard key={f.id} f={f} idx={facturas.indexOf(f)} onUpdate={upd} docNum={f.aprobado&&!f.error?getDocNum(f.id):null}/>
+              <FacturaCard key={f.id} f={f} idx={facturas.indexOf(f)} onUpdate={upd} docNum={f.aprobado&&!f.error?getDocNum(f.id):null} onAprender={registrarAprendizaje}/>
             ))}
             {aprobadas.length>0&&(
               <div style={{background:"#0f1a2e",border:"1px solid #1e3a5f",borderRadius:10,padding:"16px 20px",marginTop:4}}>
