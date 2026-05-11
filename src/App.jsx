@@ -796,10 +796,10 @@ function ModalExport({ facturas, onClose }) {
 }
 
 
-function ModalTratamiento({ archivos, onConfirm, onCancel }) {
+function ModalTratamiento({ archivos, empresaActual, empresas, onEmpresa, onConfirm, onCancel }) {
   const [tratamiento, setTratamiento] = useState(null);
   const [tratIva, setTratIva] = useState(null);
-  const listo = tratamiento && tratIva;
+  const listo = tratamiento && tratIva && empresaActual;
   return (
     <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.88)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:16,overflowY:"auto"}}>
       <div style={{background:"#161923",border:"1px solid #232840",borderRadius:16,padding:26,maxWidth:540,width:"100%"}}>
@@ -808,6 +808,30 @@ function ModalTratamiento({ archivos, onConfirm, onCancel }) {
           <div style={{fontFamily:"sans-serif",fontWeight:700,fontSize:16,color:"#fff",marginBottom:4}}>¿Cómo se contabiliza?</div>
           <div style={{fontSize:11,color:"#64748b"}}>{archivos.length===1?`📄 ${archivos[0].name}`:`${archivos.length} archivos`}</div>
         </div>
+        {/* Selector de empresa si no hay una activa */}
+        {!empresaActual && empresas.length > 0 && (
+          <div style={{background:"#1e2a3a",border:"1px solid #4f7cff",borderRadius:8,padding:"10px 14px",marginBottom:16}}>
+            <div style={{fontSize:11,color:"#60a5fa",marginBottom:6,fontWeight:600}}>🏢 Selecciona la empresa</div>
+            <select
+              defaultValue=""
+              onChange={e=>{ const emp=empresas.find(x=>x.nit===e.target.value); if(emp) onEmpresa(emp); }}
+              style={{width:"100%",background:"#0f1117",border:"1px solid #2d3352",color:"#e2e8f0",borderRadius:6,padding:"7px 10px",fontSize:12,cursor:"pointer",outline:"none"}}
+            >
+              <option value="" disabled>— elige empresa —</option>
+              {empresas.map(e=><option key={e.nit} value={e.nit}>{e.nombre} · {e.nit}</option>)}
+            </select>
+          </div>
+        )}
+        {!empresaActual && empresas.length === 0 && (
+          <div style={{background:"#1a0a0a",border:"1px solid #3b1f1f",borderRadius:8,padding:"10px 14px",marginBottom:16,fontSize:12,color:"#f87171"}}>
+            ⚠ No hay empresas configuradas. Ve a ⚙️ Config y crea una primero.
+          </div>
+        )}
+        {empresaActual && (
+          <div style={{background:"#0a1a0a",border:"1px solid #166534",borderRadius:6,padding:"6px 12px",marginBottom:14,fontSize:11,color:"#4ade80"}}>
+            🏢 <strong>{empresaActual.nombre}</strong> · {empresaActual.nit}
+          </div>
+        )}
         <div style={{marginBottom:16}}>
           <div style={{fontSize:10,color:"#64748b",fontWeight:600,textTransform:"uppercase",letterSpacing:".08em",marginBottom:8}}>Paso 1 — Tratamiento</div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
@@ -834,7 +858,9 @@ function ModalTratamiento({ archivos, onConfirm, onCancel }) {
         <div style={{background:"#0a1a0a",border:"1px solid #166534",borderRadius:6,padding:"6px 12px",marginBottom:14,fontSize:11,color:"#4ade80"}}>✓ <strong>PUC integrado</strong> — la IA usará exclusivamente las cuentas de la empresa.</div>
         <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
           <button onClick={onCancel} style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",padding:"8px 16px",borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:600}}>Cancelar</button>
-          <button onClick={()=>listo&&onConfirm(tratamiento,tratIva)} disabled={!listo} style={{background:listo?"#4f7cff":"#1e2235",color:listo?"#fff":"#475569",border:"none",padding:"8px 22px",borderRadius:6,cursor:listo?"pointer":"not-allowed",fontSize:13,fontWeight:700}}>{listo?"Procesar →":"Completa los 2 pasos"}</button>
+          <button onClick={()=>listo&&onConfirm(tratamiento,tratIva)} disabled={!listo} style={{background:listo?"#4f7cff":"#1e2235",color:listo?"#fff":"#475569",border:"none",padding:"8px 22px",borderRadius:6,cursor:listo?"pointer":"not-allowed",fontSize:13,fontWeight:700}}>
+            {listo?"Procesar →": !empresaActual?"Selecciona empresa primero":"Completa los 2 pasos"}
+          </button>
         </div>
       </div>
     </div>
@@ -1205,7 +1231,6 @@ export default function App() {
   if (!logueado) return <LoginScreen onLogin={login} />;
 
   const recibirArchivos = (lista) => {
-    if (!empresaActual) { alert("Primero selecciona una empresa en ⚙️ Configuración"); return; }
     const v = Array.from(lista).filter(f=>f.name.endsWith(".xml")||f.name.endsWith(".pdf"));
     if (v.length) setModal({ archivos:v });
   };
@@ -1252,7 +1277,7 @@ export default function App() {
     <div style={{fontFamily:"monospace",background:"#0f1117",minHeight:"100vh",color:"#e2e8f0"}}>
       <style>{`*{box-sizing:border-box} ::-webkit-scrollbar{width:5px} ::-webkit-scrollbar-thumb{background:#3a3f5c;border-radius:3px} .dz{border:2px dashed #2d3352;border-radius:14px;padding:44px 24px;text-align:center;transition:all .2s;cursor:pointer} .dz:hover,.dz.over{border-color:#4f7cff;background:rgba(79,124,255,.05)} @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}`}</style>
 
-      {modal&&<ModalTratamiento archivos={modal.archivos} onConfirm={confirmarTratamiento} onCancel={()=>setModal(null)}/>}
+      {modal&&<ModalTratamiento archivos={modal.archivos} empresaActual={empresaActual} empresas={empresas} onEmpresa={setEmpresaActual} onConfirm={confirmarTratamiento} onCancel={()=>setModal(null)}/>}
       {modalExport&&<ModalExport facturas={facturas} onClose={()=>setModalExport(false)}/>}
       {modalConfig&&<ModalConfig config={config} onClose={()=>setModalConfig(false)}/>}
       {modalTerceros&&<ModalTerceros terceros={terceros} onUpdate={updateTercero} onDelete={deleteTercero} onExport={exportarTercerosXLSX} onClose={()=>setModalTerceros(false)}/>}
