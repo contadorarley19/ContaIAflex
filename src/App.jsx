@@ -680,8 +680,18 @@ function parseXMLFactura(xmlText) {
   } catch { return null; }
 }
 
-async function callClaude(body) {
+async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function callClaude(body, intento=0) {
   const res = await fetch(API_URL, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) });
+  if (res.status === 429) {
+    // Rate limit — esperar y reintentar hasta 4 veces
+    if (intento >= 4) throw new Error("Límite de API alcanzado. Espera 1 minuto e intenta de nuevo.");
+    const espera = (intento + 1) * 15000; // 15s, 30s, 45s, 60s
+    console.log(`Rate limit 429 — esperando ${espera/1000}s (intento ${intento+1}/4)...`);
+    await sleep(espera);
+    return callClaude(body, intento + 1);
+  }
   if (!res.ok) { const txt=await res.text(); throw new Error(`HTTP ${res.status}: ${txt}`); }
   const data = await res.json();
   if (data.error) throw new Error(data.error.message||JSON.stringify(data.error));
@@ -695,12 +705,57 @@ async function parsePDFFactura(archivo) {
   return JSON.parse(text);
 }
 
-async function analizarConIA(datos, tratamiento, tratIva, puc) {
+async function analizarConIA(datos, tratamiento, tratIva, puc, retenciones=[]) {
   const pucTexto = puc.map(([c,n])=>`${c}\t${n}`).join("\n");
   const itemsTexto = datos.items?.length ? datos.items.map(i=>`- Cant ${i.cantidad} | ${i.descripcion} | $${i.valor.toLocaleString("es-CO")}`).join("\n") : "(sin ítems)";
-  const instrTrat = tratamiento==="inventario" ? `INVENTARIO: conserva cada ítem por separado. Usa SOLO cuentas 14x. NUNCA uses 61x ni 51x. Cuenta principal: 14350501. Una línea por ítem.` : `COSTO/GASTO: resume en UN solo concepto. Usa SOLO cuentas 61x o 51x. NUNCA uses cuentas 14x. Cuenta principal: 61350501.`;
-  const instrIva = tratIva==="descontable" ? `IVA → cuenta_iva_codigo: "24081010", cuenta_iva_nombre: "Iva compras"` : `IVA → detecta tipo: si son bienes físicos usa cuenta_iva_codigo: "61157001" nombre: "Iva transitorio compras". Si son servicios usa cuenta_iva_codigo: "61157002" nombre: "Iva de servicios"`;
-  const prompt = `Eres contador colombiano experto en PUC. Responde SOLO JSON válido sin texto adicional.\n\nFACTURA:\nProveedor: ${datos.razonSocial} | NIT: ${datos.nitProveedor} | Fecha: ${datos.fecha}\nÍtems:\n${itemsTexto}\nSubtotal: $${datos.subtotal?.toLocaleString("es-CO")} | IVA: $${datos.totalIva?.toLocaleString("es-CO")} | Total: $${datos.total?.toLocaleString("es-CO")}\n\nPUC EMPRESA (SOLO estas cuentas):\nplncod\tplnnom\n${pucTexto}\n\n${instrTrat}\n\nRETENCIONES — usa solo estas cuentas del PUC:\n23654035=2.5% compras | 23654036=3.5% compras no decl | 23652501=1% transporte\n23652504=4% servicios decl | 23652506=6% servicios no decl\n23651510=10% honorarios | 23651511=11% honorarios | 23653035=3.5% arriendos | 23657002=2% obra\n\n${instrIva}\n\nREGLAS ESTRICTAS:\n1. lineas_contables debe contener SOLO las cuentas de costo/gasto/inventario (6x, 5x, 14x).\n2. NUNCA incluyas cuentas 22x, 23x ni 24x en lineas_contables.\n3. Las cuentas de retención van en cuenta_retefuente_codigo, no en lineas_contables.\n\nResponde con este JSON exacto:\n{"concepto_general":"","tipo_cuenta":"Inventario|Costo|Gasto","retefuente_pct":0,"retefuente_descripcion":"","cuenta_retefuente_codigo":"","cuenta_retefuente_nombre":"","retica_por_mil":0,"advertencia_puc":"","cuenta_iva_codigo":"","cuenta_iva_nombre":"","lineas_contables":[{"descripcion":"","cantidad":1,"valor_base":0,"cuenta_debito_codigo":"","cuenta_debito_nombre":"","sin_cuenta_exacta":false}]}`;
+  // Instrucción de tratamiento — sin cuentas hardcodeadas, la IA busca en el PUC
+  const instrTrat = tratamiento==="inventario"
+    ? `INVENTARIO: registra cada ítem de la factura por separado. Busca en el PUC de la empresa la cuenta auxiliar (8 dígitos) que mejor describa cada ítem. Usa cuentas 14x (inventario/activos). NUNCA uses cuentas 6x ni 5x. Si no hay cuenta exacta marca sin_cuenta_exacta:true.`
+    : `COSTO/GASTO: resume en UN solo concepto general. Busca en el PUC de la empresa la cuenta auxiliar (8 dígitos) que mejor describa el gasto según los ítems de la factura. Usa cuentas 6x o 5x. NUNCA uses cuentas 14x. Analiza la descripción de los ítems para elegir la cuenta más específica del PUC.`;
+
+  // Instrucción IVA — buscar en el PUC, no hardcodear
+  const instrIva = tratIva==="descontable"
+    ? `IVA DESCONTABLE: busca en el PUC la cuenta auxiliar de IVA descontable (cuentas 24x). Si no existe en el PUC deja cuenta_iva_codigo vacío.`
+    : `IVA AL GASTO (consorcio): busca en el PUC la cuenta auxiliar de IVA transitorio o IVA servicios (cuentas 61x o 51x). Si son bienes físicos busca "iva transitorio compras", si son servicios busca "iva servicios". Si no existe en el PUC deja cuenta_iva_codigo vacío.`;
+
+  // Retenciones: solo tarifas de referencia, la cuenta la busca en el PUC
+  const retTexto = retenciones.map(r=>`${r.concepto}: tarifa ${r.tarifa}%, base mínima $${r.base.toLocaleString("es-CO")}`).join("
+");
+
+  const prompt = `Eres contador colombiano experto en PUC. Responde SOLO JSON válido sin texto adicional.
+
+FACTURA:
+Proveedor: ${datos.razonSocial} | NIT: ${datos.nitProveedor} | Fecha: ${datos.fecha}
+Ítems:
+${itemsTexto}
+Subtotal: $${datos.subtotal?.toLocaleString("es-CO")} | IVA: $${datos.totalIva?.toLocaleString("es-CO")} | Total: $${datos.total?.toLocaleString("es-CO")}
+
+PUC DE LA EMPRESA (SOLO puedes usar estas cuentas — son las únicas disponibles):
+Código	Nombre
+${pucTexto}
+
+TRATAMIENTO CONTABLE:
+${instrTrat}
+
+RETENCIONES EN LA FUENTE (tarifas de referencia):
+${retTexto}
+IMPORTANTE retenciones: 
+- Determina qué retención aplica según el tipo de servicio/compra de la factura.
+- Busca en el PUC de la empresa la cuenta auxiliar de retención más apropiada (cuentas 23x).
+- Si el proveedor es autorretenedor NO apliques retención (retefuente_pct=0, cuenta vacía).
+
+IVA:
+${instrIva}
+
+REGLAS ESTRICTAS:
+1. SOLO usa cuentas que existen en el PUC de la empresa listado arriba. Nunca inventes códigos.
+2. lineas_contables: SOLO cuentas de costo/gasto/inventario (6x, 5x, 14x). NUNCA 22x, 23x, 24x.
+3. Las cuentas de retención van SOLO en cuenta_retefuente_codigo.
+4. Analiza los ítems para elegir la cuenta más específica disponible en el PUC.
+5. Si ninguna cuenta del PUC coincide exactamente, elige la más cercana y marca sin_cuenta_exacta:true.
+
+Responde con este JSON exacto:
+{"concepto_general":"","tipo_cuenta":"Inventario|Costo|Gasto","retefuente_pct":0,"retefuente_descripcion":"","cuenta_retefuente_codigo":"","cuenta_retefuente_nombre":"","retica_por_mil":0,"advertencia_puc":"","cuenta_iva_codigo":"","cuenta_iva_nombre":"","lineas_contables":[{"descripcion":"","cantidad":1,"valor_base":0,"cuenta_debito_codigo":"","cuenta_debito_nombre":"","sin_cuenta_exacta":false}]}`;
   const data = await callClaude({ model:"claude-sonnet-4-5", max_tokens:2000, messages:[{role:"user",content:prompt}] });
   const text = data.content?.map(b=>b.text||"").join("").replace(/```json|```/g,"").trim();
   return JSON.parse(text);
@@ -1214,7 +1269,7 @@ function LoginScreen({ onLogin }) {
 // ─── APP PRINCIPAL ───────────────────────────────────────────────────────────
 export default function App() {
   const config = useConfig();
-  const { puc, autoRet, cargando, empresas, empresaActual, setEmpresaActual } = config;
+  const { puc, retenciones, autoRet, cargando, empresas, empresaActual, setEmpresaActual } = config;
 
   const auth = useAuth();
   const { logueado, usuarioActual, login, logout } = auth;
@@ -1223,6 +1278,7 @@ export default function App() {
   const [facturas, setFacturas]       = useState([]);
   const [modal, setModal]             = useState(null);
   const [procesando, setProcesando]   = useState(false);
+  const [progreso, setProgreso]       = useState({actual:0, total:0});
   const [modalExport, setModalExport] = useState(false);
   const [modalConfig, setModalConfig] = useState(false);
   const [modalTerceros, setModalTerceros] = useState(false);
@@ -1238,13 +1294,15 @@ export default function App() {
   const confirmarTratamiento = async (tratamiento, tratIva) => {
     const { archivos } = modal;
     setModal(null); setProcesando(true);
-    for (let i=0; i<archivos.length; i+=4) {
-      await Promise.all(archivos.slice(i,i+4).map(async archivo => {
+    setProgreso({actual:0, total:archivos.length});
+    for (let i=0; i<archivos.length; i++) {
+      setProgreso({actual:i+1, total:archivos.length});
+      await (async (archivo) => {
         try {
           let datos = {};
           if (archivo.name.toLowerCase().endsWith(".pdf")) datos = await parsePDFFactura(archivo);
           else { const t=await archivo.text(); datos=parseXMLFactura(t)||{}; }
-          const ia = await analizarConIA(datos, tratamiento, tratIva, puc);
+          const ia = await analizarConIA(datos, tratamiento, tratIva, puc, retenciones);
           const nit = (datos.nitProveedor||"").replace(/[^0-9]/g,"");
           const esA = !!autoRet[nit];
           // Guardar/actualizar tercero automáticamente
@@ -1263,7 +1321,9 @@ export default function App() {
         } catch(e) {
           setFacturas(prev=>[...prev,{id:Date.now()+Math.random(),archivo:archivo.name,error:e.message}]);
         }
-      }));
+      })(archivos[i]);
+      // Pausa entre facturas para no saturar el rate limit
+      if (i < archivos.length - 1) await sleep(2000);
     }
     setProcesando(false);
   };
@@ -1341,7 +1401,14 @@ export default function App() {
         <div className="dz" onDragOver={e=>{e.preventDefault();e.currentTarget.classList.add("over")}} onDragLeave={e=>e.currentTarget.classList.remove("over")} onDrop={e=>{e.preventDefault();e.currentTarget.classList.remove("over");recibirArchivos(e.dataTransfer.files)}} onClick={()=>document.getElementById("fi").click()}>
           <input id="fi" type="file" multiple accept=".xml,.pdf" style={{display:"none"}} onChange={e=>recibirArchivos(e.target.files)}/>
           {procesando
-            ? <div><div style={{fontSize:28,marginBottom:8,display:"inline-block",animation:"spin 1s linear infinite"}}>⚙️</div><div style={{fontFamily:"sans-serif",fontSize:14,color:"#4f7cff",fontWeight:600}}>Procesando con IA…</div></div>
+            ? <div>
+                <div style={{fontSize:28,marginBottom:8,display:"inline-block",animation:"spin 1s linear infinite"}}>⚙️</div>
+                <div style={{fontFamily:"sans-serif",fontSize:14,color:"#4f7cff",fontWeight:600}}>Procesando con IA…</div>
+                {progreso.total>1&&<div style={{marginTop:6,fontSize:12,color:"#64748b"}}>{progreso.actual} de {progreso.total} facturas</div>}
+                {progreso.total>1&&<div style={{marginTop:6,width:200,height:4,background:"#1e2235",borderRadius:2,margin:"6px auto 0"}}>
+                  <div style={{width:`${(progreso.actual/progreso.total)*100}%`,height:"100%",background:"#4f7cff",borderRadius:2,transition:"width .3s"}}></div>
+                </div>}
+              </div>
             : <div>
                 <div style={{fontSize:34,marginBottom:8}}>📂</div>
                 <div style={{fontFamily:"sans-serif",fontSize:14,fontWeight:600,color:"#cbd5e1"}}>Arrastra facturas XML o PDF aquí</div>
