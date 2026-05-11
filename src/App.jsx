@@ -352,6 +352,7 @@ function useAprendizaje() {
     return sugerencias.length > 0
       ? "\nHISTORIAL DE CUENTAS APROBADAS (usa como referencia preferente):\n" + sugerencias.join("\n")
       : "";
+  };
 
   return { memoria, registrar, sugerir, contextoParaPrompt };
 }
