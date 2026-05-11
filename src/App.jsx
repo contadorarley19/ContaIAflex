@@ -350,12 +350,8 @@ function useAprendizaje() {
       if (s) sugerencias.push(`"${desc}" → cuenta ${s.codigo} (${s.nombre}), usado ${s.veces} veces`);
     });
     return sugerencias.length > 0
-      ? `
-HISTORIAL DE CUENTAS APROBADAS (usa como referencia preferente):
-${sugerencias.join("
-")}`
+      ? "\nHISTORIAL DE CUENTAS APROBADAS (usa como referencia preferente):\n" + sugerencias.join("\n")
       : "";
-  };
 
   return { memoria, registrar, sugerir, contextoParaPrompt };
 }
