@@ -167,6 +167,121 @@ function useAuth() {
   return { logueado, usuarioActual, usuarios, login, logout, saveUsuarios };
 }
 
+// ─── UTILIDADES TERCEROS ─────────────────────────────────────────────────────
+function calcularDV(nit) {
+  const n = String(nit).trim().replace(/[^0-9]/g,"");
+  if (!n) return "";
+  const primos = [3,7,13,17,19,23,29,37,41,43,47];
+  let suma = 0;
+  const rev = n.split("").reverse();
+  rev.forEach((d,i) => { if(i<primos.length) suma += parseInt(d)*primos[i]; });
+  const r = suma % 11;
+  return String(r < 2 ? r : 11 - r);
+}
+
+function extraerTerceroDeFactura(datos) {
+  // datos viene de parseXMLFactura o parsePDFFactura
+  const nit = (datos.nitProveedor||"").replace(/[^0-9]/g,"");
+  if (!nit) return null;
+  // Persona: schemeID 31=Jurídica, resto=Natural
+  // Si RazonSocial contiene S.A.S, LTDA, S.A, etc → Jurídica
+  const razon = (datos.razonSocial||"").toUpperCase();
+  const esJuridica = datos.schemeID==="31" ||
+    /S\.A\.S|S\.A\.|LTDA|S\.C\.A|LTDA\.|E\.U\.|S\.E\.M\.A|INC\.|CORP|CIA|COMPAÑIA|EMPRESA|INDUSTRIA|COMERCIALIZADORA|DISTRIBUIDORA/.test(razon);
+  const persona = esJuridica ? "Jurídica" : "Natural";
+
+  // Régimen desde taxLevelCode
+  const tlc = (datos.taxLevelCode||"").toUpperCase();
+  let regimen = "Responsable IVA";
+  if (tlc.includes("O-48")) regimen = "No Responsable IVA";
+  if (tlc.includes("O-47")) regimen = "Régimen Simple";
+  if (tlc.includes("O-13")) regimen = "Gran Contribuyente";
+
+  return {
+    NIT: nit,
+    DigitoV: calcularDV(nit),
+    RazonSocial: datos.razonSocial||"",
+    Direccion: datos.direccion||"",
+    Telefono: datos.telefono||"",
+    Celular: "",
+    Email: datos.email||"",
+    Ciudad: datos.ciudad||"",
+    Departamento: datos.departamento||"",
+    Pais: "Colombia",
+    Regimen: regimen,
+    Persona: persona,
+    EsCliente: "0",
+    EsProveedor: "1",
+    EsEmpleado: "0",
+    GranContribuyente: tlc.includes("O-13") ? "1" : "0",
+    Autoretenedor: datos.esAutorretenedor ? "1" : "0",
+  };
+}
+
+// ─── HOOK: terceros ───────────────────────────────────────────────────────────
+function useTerceros() {
+  const [terceros, setTerceros] = useState([]);
+
+  useEffect(() => {
+    (async () => {
+      const t = await cfgGet("terceros");
+      if (t) setTerceros(t);
+    })();
+  }, []);
+
+  const upsertTercero = async (nuevo) => {
+    if (!nuevo?.NIT) return;
+    setTerceros(prev => {
+      const idx = prev.findIndex(t => t.NIT === nuevo.NIT);
+      let next;
+      if (idx >= 0) {
+        // Actualizar solo campos vacíos con los nuevos datos
+        const existing = prev[idx];
+        const merged = { ...existing };
+        Object.keys(nuevo).forEach(k => {
+          if (!merged[k] || merged[k]==="") merged[k] = nuevo[k];
+        });
+        next = [...prev];
+        next[idx] = merged;
+      } else {
+        next = [...prev, nuevo];
+      }
+      cfgSet("terceros", next);
+      return next;
+    });
+  };
+
+  const updateTercero = async (nit, campo, valor) => {
+    setTerceros(prev => {
+      const next = prev.map(t => t.NIT===nit ? {...t,[campo]:valor} : t);
+      cfgSet("terceros", next);
+      return next;
+    });
+  };
+
+  const deleteTercero = async (nit) => {
+    setTerceros(prev => {
+      const next = prev.filter(t => t.NIT!==nit);
+      cfgSet("terceros", next);
+      return next;
+    });
+  };
+
+  const exportarTercerosXLSX = (lista) => {
+    const cols = ["NIT","DigitoV","RazonSocial","Direccion","Telefono","Celular",
+                  "Email","Ciudad","Departamento","Pais","Regimen","Persona",
+                  "EsCliente","EsProveedor","EsEmpleado","GranContribuyente","Autoretenedor"];
+    const wsData = [cols, ...lista.map(t => cols.map(c => t[c]||""))];
+    const ws = XLSX.utils.aoa_to_sheet(wsData);
+    ws["!cols"] = cols.map((c,i) => ({wch: [12,8,40,30,14,14,30,20,20,12,20,12,10,10,10,16,14][i]||15}));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Terceros");
+    XLSX.writeFile(wb, `Terceros_ContaFlex_${new Date().toISOString().slice(0,10)}.xlsx`);
+  };
+
+  return { terceros, upsertTercero, updateTercero, deleteTercero, exportarTercerosXLSX };
+}
+
 // ─── MODAL CONFIGURACIÓN ─────────────────────────────────────────────────────
 function ModalConfig({ config, onClose }) {
   const { puc, retenciones, autoRet, empresas, empresaActual,
@@ -248,9 +363,43 @@ function ModalConfig({ config, onClose }) {
         const wb = XLSX.read(ev.target.result, {type:"array"});
         const ws = wb.Sheets[wb.SheetNames[0]];
         const rows = XLSX.utils.sheet_to_json(ws, {header:1});
-        const nuevas = rows.filter(r=>r[0]&&r[1]).map(r=>[String(r[0]).trim(),String(r[1]).trim()]);
-        if (nuevas.length) { setPucLocal(nuevas); setMsg(`✓ ${nuevas.length} cuentas importadas — guarda para aplicar`); setTimeout(()=>setMsg(""),4000); }
-      } catch { setMsg("❌ Error leyendo archivo"); }
+        if (!rows.length) { setMsg("❌ Archivo vacío"); return; }
+
+        // Detectar formato automáticamente
+        // Formato A: [Código, Nivel, Nombre, Naturaleza]  ← exportado del sistema contable
+        // Formato B: [Código, Nombre]                     ← formato simple
+        const header = rows[0].map(h => String(h||"").toLowerCase().trim());
+        const hasNivel = header.includes("nivel") || header.includes("level");
+        const colCodigo = hasNivel ? 0 : 0;
+        const colNombre = hasNivel ? 2 : 1;
+        const colNivel  = hasNivel ? 1 : -1;
+
+        let nuevas = [];
+        // Saltar fila de encabezado si existe
+        const dataRows = (String(rows[0][0]||"").toLowerCase().includes("cod") ||
+                          String(rows[0][0]||"").toLowerCase() === "código") ? rows.slice(1) : rows;
+
+        dataRows.forEach(r => {
+          const cod  = String(r[colCodigo]||"").trim();
+          const nom  = String(r[colNombre]||"").trim();
+          const nivel = colNivel >= 0 ? String(r[colNivel]||"").trim().toLowerCase() : "";
+          if (!cod || !nom) return;
+          if (cod.toLowerCase() === "código" || cod.toLowerCase() === "codigo") return;
+          // Si tiene columna Nivel → solo importar Auxiliar (las que van en asientos contables)
+          // Si no tiene columna Nivel → importar todas (formato simple)
+          if (hasNivel && nivel !== "auxiliar") return;
+          nuevas.push([cod, nom]);
+        });
+
+        if (nuevas.length) {
+          setPucLocal(nuevas);
+          const info = hasNivel ? `(solo Auxiliar, ${nuevas.length} cuentas)` : `(${nuevas.length} cuentas)`;
+          setMsg(`✓ ${nuevas.length} cuentas importadas ${info} — guarda para aplicar`);
+          setTimeout(()=>setMsg(""),5000);
+        } else {
+          setMsg("❌ No se encontraron cuentas. Verifica que col A=Código, col C=Nombre (o col B si formato simple)");
+        }
+      } catch(err) { setMsg("❌ Error leyendo archivo: " + err.message); }
     };
     reader.readAsArrayBuffer(file);
     e.target.value = "";
@@ -503,18 +652,26 @@ function parseXMLFactura(xmlText) {
   try {
     const doc = new DOMParser().parseFromString(xmlText,"text/xml");
     const get = tag => doc.getElementsByTagNameNS("*",tag)[0]?.textContent?.trim()||"";
+    const getAttr = (tag,attr) => { const n=doc.getElementsByTagNameNS("*",tag)[0]; return n?.getAttribute?.(attr)||""; };
     const supplier = doc.getElementsByTagNameNS("*","AccountingSupplierParty")[0];
     const gf = (node,tag) => node?.getElementsByTagNameNS("*",tag)[0]?.textContent?.trim()||"";
+    const gfa = (node,tag,attr) => { const n=node?.getElementsByTagNameNS("*",tag)[0]; return n?.getAttribute?.(attr)||""; };
     const items = Array.from(doc.getElementsByTagNameNS("*","InvoiceLine")).map(l=>({
       descripcion: l.getElementsByTagNameNS("*","Description")[0]?.textContent?.trim()||"",
       cantidad: parseFloat(l.getElementsByTagNameNS("*","InvoicedQuantity")[0]?.textContent||"1"),
       valor: parseFloat(l.getElementsByTagNameNS("*","LineExtensionAmount")[0]?.textContent||"0"),
     }));
+    // schemeID del CompanyID: 31=NIT/Jurídica, 13=Cédula/Natural
+    const schemeID = gfa(supplier,"CompanyID","schemeID") || getAttr("CompanyID","schemeID");
     return {
       prefijo:get("ID"), fecha:get("IssueDate"),
       nitProveedor:gf(supplier,"CompanyID")||get("CompanyID"),
       razonSocial:gf(supplier,"RegistrationName")||get("RegistrationName"),
       direccion:gf(supplier,"Line"), ciudad:gf(supplier,"CityName"), departamento:gf(supplier,"CountrySubentity"),
+      telefono:gf(supplier,"Telephone"),
+      email:gf(supplier,"ElectronicMail"),
+      taxLevelCode:gf(supplier,"TaxLevelCode"),
+      schemeID,
       subtotal:parseFloat(get("LineExtensionAmount")||"0"),
       totalIva:parseFloat(get("TaxAmount")||"0"),
       total:parseFloat(get("PayableAmount")||"0"),
@@ -846,6 +1003,123 @@ function TestPanel({ onCargar }) {
 }
 
 
+// ─── MODAL TERCEROS ──────────────────────────────────────────────────────────
+function ModalTerceros({ terceros, onUpdate, onDelete, onExport, onClose }) {
+  const [busq, setBusq] = useState("");
+  const [editNit, setEditNit] = useState(null);
+
+  const COLS = [
+    {k:"NIT",          label:"NIT",          w:110, mono:true},
+    {k:"DigitoV",      label:"DV",           w:30},
+    {k:"RazonSocial",  label:"Razón Social",  w:220},
+    {k:"Telefono",     label:"Teléfono",      w:110, mono:true},
+    {k:"Celular",      label:"Celular",       w:110, mono:true},
+    {k:"Email",        label:"Email",         w:170},
+    {k:"Ciudad",       label:"Ciudad",        w:100},
+    {k:"Departamento", label:"Dpto",          w:100},
+    {k:"Persona",      label:"Persona",       w:75},
+    {k:"Regimen",      label:"Régimen",       w:120},
+    {k:"GranContribuyente", label:"G.Cont.",  w:55},
+    {k:"Autoretenedor",     label:"AutoRet",  w:55},
+  ];
+
+  const EDITABLE = ["Telefono","Celular","Email","Ciudad","Departamento","Pais","Persona","Regimen","DigitoV","RazonSocial","Direccion","GranContribuyente","Autoretenedor"];
+
+  const filtrados = terceros.filter(t =>
+    t.NIT?.includes(busq) ||
+    t.RazonSocial?.toLowerCase().includes(busq.toLowerCase()) ||
+    t.Ciudad?.toLowerCase().includes(busq.toLowerCase())
+  );
+
+  const s = {
+    modal:{position:"fixed",inset:0,background:"rgba(0,0,0,.92)",zIndex:3000,display:"flex",flexDirection:"column",padding:16},
+    box:{background:"#161923",border:"1px solid #232840",borderRadius:16,flex:1,display:"flex",flexDirection:"column",overflow:"hidden"},
+    input:{background:"#0f1117",border:"1px solid #2d3352",color:"#e2e8f0",borderRadius:6,padding:"5px 9px",fontFamily:"monospace",fontSize:11,outline:"none"},
+    btn:(c)=>({background:c||"#4f7cff",color:"#fff",border:"none",borderRadius:6,padding:"6px 14px",cursor:"pointer",fontSize:11,fontWeight:600}),
+  };
+
+  return (
+    <div style={s.modal}>
+      <div style={s.box}>
+        <div style={{padding:"14px 20px",borderBottom:"1px solid #1e2235",display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
+          <div>
+            <div style={{fontFamily:"sans-serif",fontWeight:700,fontSize:15,color:"#fff"}}>👥 Base de Terceros</div>
+            <div style={{fontSize:11,color:"#64748b",marginTop:2}}>{terceros.length} proveedores · guardado automático en Blobs · EsProveedor=1</div>
+          </div>
+          <input value={busq} onChange={e=>setBusq(e.target.value)} placeholder="Buscar NIT, nombre, ciudad..." style={{...s.input,width:220}}/>
+          <div style={{marginLeft:"auto",display:"flex",gap:8,alignItems:"center"}}>
+            <span style={{fontSize:11,color:"#4ade80",background:"#0a1a0a",border:"1px solid #166534",borderRadius:5,padding:"3px 9px"}}>{filtrados.length} mostrados</span>
+            <button onClick={()=>onExport(terceros)} style={s.btn("#166534")}>⬇ Exportar Excel</button>
+            <button onClick={onClose} style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",borderRadius:6,padding:"5px 10px",cursor:"pointer",fontSize:12}}>✕</button>
+          </div>
+        </div>
+
+        <div style={{flex:1,overflowX:"auto",overflowY:"auto"}}>
+          {terceros.length===0 ? (
+            <div style={{padding:40,textAlign:"center",color:"#475569"}}>
+              <div style={{fontSize:32,marginBottom:10}}>👥</div>
+              <div style={{fontFamily:"sans-serif",fontWeight:600,color:"#64748b",marginBottom:6}}>Sin terceros aún</div>
+              <div style={{fontSize:12}}>Se agregan automáticamente al procesar facturas</div>
+            </div>
+          ) : (
+            <table style={{borderCollapse:"collapse",fontSize:11,minWidth:"100%"}}>
+              <thead>
+                <tr style={{background:"#0d101a",position:"sticky",top:0,zIndex:2}}>
+                  {COLS.map(c=>(
+                    <th key={c.k} style={{padding:"7px 8px",textAlign:"left",color:"#475569",fontSize:10,fontWeight:600,borderBottom:"1px solid #1e2235",whiteSpace:"nowrap",minWidth:c.w}}>{c.label}</th>
+                  ))}
+                  <th style={{padding:"7px 8px",color:"#475569",fontSize:10,borderBottom:"1px solid #1e2235"}}>Acc</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtrados.map((t,i)=>(
+                  <tr key={t.NIT} style={{borderBottom:"1px solid #1a1d27",background:i%2===0?"transparent":"#0a0d14"}}>
+                    {COLS.map(c=>(
+                      <td key={c.k} style={{padding:"5px 8px",maxWidth:c.w+40,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>
+                        {EDITABLE.includes(c.k) && editNit===t.NIT ? (
+                          <input value={t[c.k]||""} onChange={e=>onUpdate(t.NIT,c.k,e.target.value)} style={{...s.input,width:"100%",padding:"3px 6px"}}/>
+                        ) : (
+                          <span onClick={()=>setEditNit(t.NIT)} title={t[c.k]||""} style={{
+                            cursor:EDITABLE.includes(c.k)?"pointer":"default",
+                            color:c.k==="NIT"?"#60a5fa":c.k==="RazonSocial"?"#e2e8f0":"#94a3b8",
+                            fontFamily:c.mono?"monospace":"inherit",
+                            borderBottom:EDITABLE.includes(c.k)?"1px dashed #2d3352":"none",
+                          }}>
+                            {c.k==="GranContribuyente"||c.k==="Autoretenedor"
+                              ? (t[c.k]==="1"?<span style={{color:"#fb923c",fontWeight:700}}>✓</span>:<span style={{color:"#2d3352"}}>—</span>)
+                              : (t[c.k]||<span style={{color:"#2d3352",fontStyle:"italic"}}>—</span>)}
+                          </span>
+                        )}
+                      </td>
+                    ))}
+                    <td style={{padding:"5px 8px"}}>
+                      <div style={{display:"flex",gap:4}}>
+                        {editNit===t.NIT
+                          ? <button onClick={()=>setEditNit(null)} style={{...s.btn("#166534"),padding:"3px 8px"}}>✓</button>
+                          : <button onClick={()=>setEditNit(t.NIT)} style={{background:"transparent",border:"1px solid #2d3352",color:"#64748b",borderRadius:4,padding:"3px 7px",cursor:"pointer",fontSize:10}}>✏</button>
+                        }
+                        <button onClick={()=>onDelete(t.NIT)} style={{background:"transparent",border:"1px solid #3b1f1f",color:"#f87171",borderRadius:4,padding:"3px 7px",cursor:"pointer",fontSize:10}}>🗑</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        <div style={{padding:"10px 20px",borderTop:"1px solid #1e2235",display:"flex",gap:12,alignItems:"center",flexWrap:"wrap"}}>
+          <div style={{fontSize:10,color:"#475569"}}>💡 Clic en celda para editar · Campos en azul vienen del XML · (—) sin dato</div>
+          <div style={{marginLeft:"auto",fontSize:11,color:"#64748b"}}>
+            Con contacto: <span style={{color:"#4ade80"}}>{terceros.filter(t=>t.Telefono||t.Email).length}</span> ·
+            Sin completar: <span style={{color:"#fbbf24"}}>{terceros.filter(t=>!t.Telefono&&!t.Email).length}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── CAMBIO 3: LoginScreen ────────────────────────────────────────────────────
 function LoginScreen({ onLogin }) {
   const [usuario, setUsuario] = useState("");
@@ -918,12 +1192,14 @@ export default function App() {
 
   const auth = useAuth();
   const { logueado, usuarioActual, login, logout } = auth;
+  const { terceros, upsertTercero, updateTercero, deleteTercero, exportarTercerosXLSX } = useTerceros();
 
   const [facturas, setFacturas]       = useState([]);
   const [modal, setModal]             = useState(null);
   const [procesando, setProcesando]   = useState(false);
   const [modalExport, setModalExport] = useState(false);
   const [modalConfig, setModalConfig] = useState(false);
+  const [modalTerceros, setModalTerceros] = useState(false);
   const [docNumInicio]                = useState("1");
 
   if (!logueado) return <LoginScreen onLogin={login} />;
@@ -946,6 +1222,9 @@ export default function App() {
           const ia = await analizarConIA(datos, tratamiento, tratIva, puc);
           const nit = (datos.nitProveedor||"").replace(/[^0-9]/g,"");
           const esA = !!autoRet[nit];
+          // Guardar/actualizar tercero automáticamente
+          const terceroNuevo = extraerTerceroDeFactura({...datos, esAutorretenedor:esA});
+          if (terceroNuevo) upsertTercero(terceroNuevo);
           const base = datos.subtotal||0;
           setFacturas(prev=>[...prev,{
             id:Date.now()+Math.random(), archivo:archivo.name, tratamiento, tratIva,
@@ -976,6 +1255,7 @@ export default function App() {
       {modal&&<ModalTratamiento archivos={modal.archivos} onConfirm={confirmarTratamiento} onCancel={()=>setModal(null)}/>}
       {modalExport&&<ModalExport facturas={facturas} onClose={()=>setModalExport(false)}/>}
       {modalConfig&&<ModalConfig config={config} onClose={()=>setModalConfig(false)}/>}
+      {modalTerceros&&<ModalTerceros terceros={terceros} onUpdate={updateTercero} onDelete={deleteTercero} onExport={exportarTercerosXLSX} onClose={()=>setModalTerceros(false)}/>}
 
       {/* NAVBAR */}
       <div style={{background:"#0d101a",borderBottom:"1px solid #1e2235",padding:"10px 20px",display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
@@ -1010,6 +1290,9 @@ export default function App() {
             : empresaActual&&<div style={{background:"#0a1a0a",border:"1px solid #166534",borderRadius:5,padding:"3px 9px",fontSize:10,color:"#4ade80",fontWeight:600}}>✓ {puc.length} cuentas PUC</div>}
           <div style={{fontSize:10,color:"#64748b"}}>👤 {usuarioActual?.usuario}</div>
           <button onClick={()=>setModalConfig(true)} style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",borderRadius:6,padding:"4px 9px",cursor:"pointer",fontSize:11}}>⚙️</button>
+          <button onClick={()=>setModalTerceros(true)} style={{background:"transparent",border:"1px solid #2d3352",color:"#60a5fa",borderRadius:6,padding:"4px 9px",cursor:"pointer",fontSize:11,fontWeight:600}} title="Base de terceros">
+            👥{terceros.length>0&&<span style={{marginLeft:3,fontSize:10,color:"#4ade80"}}>{terceros.length}</span>}
+          </button>
           <button onClick={logout} style={{background:"transparent",border:"1px solid #3b1f1f",color:"#f87171",borderRadius:6,padding:"4px 9px",cursor:"pointer",fontSize:11,fontWeight:600}}>🚪</button>
           {facturas.length>0&&<div style={{fontSize:11,color:"#64748b"}}><span style={{color:"#4f7cff",fontWeight:700}}>{facturas.filter(f=>!f.error).length}</span>/<span style={{color:"#22c55e",fontWeight:700}}>{aprobadas.length}</span></div>}
           {aprobadas.length>0&&<button onClick={()=>setModalExport(true)} style={{background:"#22c55e",color:"#fff",border:"none",borderRadius:6,padding:"5px 12px",cursor:"pointer",fontSize:11,fontWeight:700}}>⬇ Excel</button>}
