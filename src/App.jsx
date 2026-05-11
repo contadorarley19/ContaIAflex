@@ -813,8 +813,7 @@ async function analizarConIA(datos, tratamiento, tratIva, puc, retenciones=[], c
     : `IVA AL GASTO (consorcio): busca en el PUC la cuenta auxiliar de IVA transitorio o IVA servicios (cuentas 61x o 51x). Si son bienes físicos busca "iva transitorio compras", si son servicios busca "iva servicios". Si no existe en el PUC deja cuenta_iva_codigo vacío.`;
 
   // Retenciones: solo tarifas de referencia, la cuenta la busca en el PUC
-  const retTexto = retenciones.map(r=>`${r.concepto}: tarifa ${r.tarifa}%, base mínima $${r.base.toLocaleString("es-CO")}`).join("
-");
+  const retTexto = retenciones.map(r=>`${r.concepto}: tarifa ${r.tarifa}%, base mínima $${r.base.toLocaleString("es-CO")}`).join("\n");
 
   const prompt = `Eres contador colombiano experto en PUC. Responde SOLO JSON válido sin texto adicional.
 
