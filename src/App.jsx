@@ -290,8 +290,9 @@ function useConfig() {
         const found = ultima ? emps.find(e=>e.nit===ultima) : null;
         const emp = found || emps[0];
         setEmpresaActualState(emp);
+        // Siempre reemplaza completo — nunca mezcla con PUC_DEFAULT
         const p = await cfgGet(`puc_${emp.nit}`);
-        if (p) setPuc(p); else setPuc(PUC_DEFAULT);
+        setPuc(p && p.length > 0 ? p : []);
       }
       setCargando(false);
     })();
@@ -1006,7 +1007,7 @@ function ModalConfig({ config, onClose }) {
   const [msg, setMsg] = useState("");
   const [empsLocal, setEmpsLocal] = useState(empresas.map(e=>({...e})));
   const [empSel, setEmpSel] = useState(empresaActual?.nit||empsLocal[0]?.nit||"");
-  const [pucLocal, setPucLocal] = useState([...puc]);
+  const [pucLocal, setPucLocal] = useState(puc && puc.length > 0 ? [...puc] : []);
   const [busqPuc, setBusqPuc] = useState("");
   const [retLocal, setRetLocal] = useState(retenciones.map(r=>({...r})));
   const [autoLocal, setAutoLocal] = useState(Object.entries(autoRet));
@@ -1016,7 +1017,14 @@ function ModalConfig({ config, onClose }) {
   const [nuevaNombre, setNuevaNombre] = useState("");
   const [errNueva, setErrNueva] = useState("");
 
-  const cargarPucEmpresa = async (nit) => { setEmpSel(nit); const p=await cfgGet(`puc_${nit}`); setPucLocal(p||PUC_DEFAULT); setBusqPuc(""); };
+  // Al abrir el modal, siempre recargar PUC desde Blobs (no del estado React que puede ser stale)
+  useEffect(() => {
+    const nit = empresaActual?.nit || empsLocal[0]?.nit;
+    if (!nit) return;
+    cfgGet(`puc_${nit}`).then(p => { if (p && p.length > 0) setPucLocal(p); });
+  }, []);
+
+  const cargarPucEmpresa = async (nit) => { setEmpSel(nit); const p=await cfgGet(`puc_${nit}`); setPucLocal(p && p.length > 0 ? p : []); setBusqPuc(""); };
   const pucFiltrado = pucLocal.filter(([c,n])=>c.includes(busqPuc)||n.toLowerCase().includes(busqPuc.toLowerCase()));
   const autoFiltrado = autoLocal.filter(([nit,nom])=>nit.includes(busqAuto)||nom.toLowerCase().includes(busqAuto.toLowerCase()));
   const empActualObj = empsLocal.find(e=>e.nit===empSel);
@@ -1323,6 +1331,13 @@ export default function App() {
     const { archivos } = modal;
     setModal(null); setProcesando(true);
     setProgreso({actual:0, total:archivos.length});
+    // Recargar PUC fresco desde Blobs justo antes de procesar — evita usar el default stale
+    let pucFresco = puc;
+    if (empresaActual?.nit) {
+      const pBlobs = await cfgGet(`puc_${empresaActual.nit}`);
+      if (pBlobs && pBlobs.length > 0) pucFresco = pBlobs;
+    }
+    console.log(`[ContaIA] PUC cargado: ${pucFresco.length} cuentas para empresa ${empresaActual?.nit}`);
     for (let i=0; i<archivos.length; i++) {
       setProgreso({actual:i+1, total:archivos.length});
       await (async (archivo) => {
@@ -1332,8 +1347,8 @@ export default function App() {
           else { const t=await archivo.text(); datos=parseXMLFactura(t)||{}; }
           const descripciones = (datos.items||[]).map(i=>i.descripcion).filter(Boolean);
           const contextoAprendizaje = contextoParaPrompt(descripciones);
-          // CORRECCIÓN 1: analizarConIA ahora usa buildRetencionesTxt internamente
-          const ia = await analizarConIA(datos, tratamiento, tratIva, puc, retenciones, contextoAprendizaje);
+          // Usa pucFresco (recargado de Blobs) no el estado React puc
+          const ia = await analizarConIA(datos, tratamiento, tratIva, pucFresco, retenciones, contextoAprendizaje);
           const nit = (datos.nitProveedor||"").replace(/[^0-9]/g,"");
           const esA = !!autoRet[nit];
           const terceroNuevo = extraerTerceroDeFactura({...datos, esAutorretenedor:esA});
