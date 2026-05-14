@@ -202,6 +202,50 @@ const USUARIOS_DEFAULT = [
 ];
 
 // ─── API CONFIG ───────────────────────────────────────────────────────────────
+
+const SUPABASE_URL = "https://znqsbadwcfgunwndtswd.supabase.co";
+const SUPABASE_KEY = "sb_publishable_YeXUE354536RJ5VjOmgeYw_dBPI45Nc";
+
+// ─── SUPABASE CLIENT (fetch directo, sin SDK) ─────────────────────────────────
+async function sbGet(table, filters={}) {
+  try {
+    let url = `${SUPABASE_URL}/rest/v1/${table}?select=*`;
+    Object.entries(filters).forEach(([k,v]) => { url += `&${k}=eq.${v}`; });
+    const r = await fetch(url, {
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
+    });
+    if (!r.ok) return null;
+    return await r.json();
+  } catch { return null; }
+}
+
+async function sbUpsert(table, data) {
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
+      method: "POST",
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${SUPABASE_KEY}`,
+        "Content-Type": "application/json",
+        Prefer: "resolution=merge-duplicates,return=minimal"
+      },
+      body: JSON.stringify(Array.isArray(data) ? data : [data])
+    });
+    return r.ok;
+  } catch { return false; }
+}
+
+async function sbDelete(table, col, val) {
+  try {
+    const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${col}=eq.${val}`, {
+      method: "DELETE",
+      headers: { apikey: SUPABASE_KEY, Authorization: `Bearer ${SUPABASE_KEY}` }
+    });
+    return r.ok;
+  } catch { return false; }
+}
+
+// cfgGet/cfgSet — mantiene compatibilidad con Netlify Blobs para config que no migra
 async function cfgGet(key) {
   try {
     const r = await fetch(`${CFG_URL}?key=${key}`);
@@ -215,6 +259,7 @@ async function cfgSet(key, value) {
     await fetch(CFG_URL, { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({action:"set",key,value}) });
   } catch {}
 }
+
 
 // ─── CORRECCIÓN 3: HOOK FACTURAS CON PERSISTENCIA localStorage ───────────────
 // Las facturas sobreviven F5. Se guardan solo las del día actual.
@@ -273,6 +318,13 @@ function useConfig() {
       ]);
       if (r) setRetenciones(r);
       if (a) setAutoRet(a);
+      // Cargar autorretenedores desde Supabase dian_autorretenedores
+      const autorretDB = await sbGet("dian_autorretenedores");
+      if (autorretDB && autorretDB.length > 0) {
+        const obj = {};
+        autorretDB.forEach(r => { obj[r.nit] = r.razon_social; });
+        setAutoRet(obj);
+      }
       if (emps && emps.length) {
         setEmpresas(emps);
         const ultima = localStorage.getItem("contaia_empresa");
