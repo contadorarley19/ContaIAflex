@@ -132,50 +132,9 @@ function buildRetencionesTxt(fecha, subtotal, esJuridica) {
 
 // ─── DATOS POR DEFECTO ───────────────────────────────────────────────────────
 
-const PUC_DEFAULT = [
-  ["11050501","Caja general"],["11100501","Puerto concordia"],["11100502","Cumaral"],
-  ["11100503","Cumaral colpatria"],["11100504","La macarena"],["11200501","Banco de bogota 351345202"],
-  ["13050501","Clientes"],["13300501","A proveedores"],["13551501","1% contrato de obra"],
-  ["13551502","1% transporte de carga"],["13551510","10% honorarios"],["13551511","11% honorarios"],
-  ["13551535","3.5% compras"],["13551801","Retencion de industri y comercio"],
-  ["14100508","Honorarios"],["14300501","Alquileres"],["14301002","Obras civiles"],
-  ["14301501","Servicios tecnicos"],["14301504","Aseo y vigilancia"],
-  ["14301601","Correo transportes y fletes"],["14301801","Mantenimiento y reparaciones"],
-  ["14301901","Adecuacion e instalacion"],["14302001","Instalaciones electricas"],
-  ["14305001","Transportes fletes y acarreos"],["14310501","Polizas"],
-  ["14350501","Compras para la construccion de obras"],["14450501","Transporte de carga"],
-  ["14456001","Telefono"],["14456002","Luz"],["14456003","Acueducto y alcantarillado"],
-  ["14530505","Gastos bancarios"],["14531001","Gravamen y movimiento financiero"],
-  ["14532001","Intereses"],["14550501","Alojamiento y manutencion"],
-  ["14952001","Elementos de aseo y cafeteria"],["14952101","Utiles papeleria y fotocopias"],
-  ["14953501","Combustibles y lubricantes"],["14959501","Otros"],
-  ["15200501","Maquinaria y equipo"],["15240501","Equipo de oficina"],
-  ["22050101","Proveedores"],["23352501","Honorarios por pagar"],["23353001","Servicios por pagar"],
-  ["23354001","Arrendamientos por pagar"],["23354501","Transportes fletes por pagar"],
-  ["23651510","10% honorarios"],["23651511","11% honorarios"],["23652501","1% transporte"],
-  ["23652502","2% ser. vigilancia"],["23652504","4% servicios declarantes"],
-  ["23652506","6% servicios no declarantes"],["23652535","Transporte de pasajeros 3.5%"],
-  ["23653035","3.5% arriendo inmuebles"],["23653040","4% arriendo muebles"],
-  ["23654001","0.1% combustible"],["23654035","2.5% compras"],["23654036","Rete de 3.5%"],
-  ["23657001","1% contrato de obra"],["23657002","Obra 2%"],
-  ["23670101","Impuesto a las ventas retenido"],["24081010","Iva compras"],
-  ["24081501","Retencion de iva"],["25050501","Salarios por pagar"],
-  ["51100501","Honorarios admon"],["51353001","Energia electrica"],["51353501","Telefono admon"],
-  ["51354001","Mensajeria"],["51355001","Transporte flete admon"],["51959901","Otros gastos admon"],
-  ["61100508","Honorarios obra"],["61157001","Iva transitorio compras"],["61157002","Iva de servicios"],
-  ["61201501","Alquileres maquinaria"],["61300501","Alquileres construccion"],["61301002","Obras civiles"],
-  ["61301501","Servicios tecnicos"],["61301502","Aseo y vigilancia"],["61301801","Mantenimiento y reparacion"],
-  ["61305001","Transportes fletes y acarreos"],["61310501","Polizas"],
-  ["61350501","Compras para la construccion de obras"],["61350502","Compra material reposicion 1%"],
-  ["61350503","Compra productos de señalizacion"],["61360501","Aseo y vigilancia obra"],
-  ["61360504","Telefono obra"],["61360505","Transporte fletes obra"],["61360507","Acueducto y alcantarillado"],
-  ["61360509","Transporte de pasajeros"],["61360510","Transporte de carga"],["61361501","Asistencia tecnica"],
-  ["61400501","Notariales"],["61400502","Gastos legales"],["61450501","Transporte de carga obra"],
-  ["61455001","Mantenimiento y reparaciones obra"],["61550501","Alojamiento y manutencion obra"],
-  ["61552001","Pasajes terrestres"],["61952001","Elementos de aseo cafeteria"],
-  ["61952101","Utiles de papeleria"],["61953501","Combustible"],["61953502","Lubricantes"],
-  ["61959901","Otros gastos obra"],
-];
+// PUC_DEFAULT vacío — el PUC real se carga desde Netlify Blobs por empresa
+// Si el usuario no ha importado su PUC, la IA verá lista vacía y avisará
+const PUC_DEFAULT = [];
 
 // RETENCIONES_DEFAULT se mantiene para compatibilidad con cfgGet("retenciones") legacy
 // Ahora la lógica real usa RETENCIONES_TABLA + buildRetencionesTxt
@@ -398,8 +357,10 @@ function extraerTerceroDeFactura(datos) {
   const nit = (datos.nitProveedor||"").replace(/[^0-9]/g,"");
   if (!nit) return null;
   const razon = (datos.razonSocial||"").toUpperCase();
-  const esJuridica = datos.schemeID==="31" ||
-    /S\.A\.S|S\.A\.|LTDA|S\.C\.A|E\.U\.|INC\.|CORP|CIA|COMPAÑIA|EMPRESA|INDUSTRIA|COMERCIALIZADORA|DISTRIBUIDORA/.test(razon);
+  const nitLimpio2 = (datos.nitProveedor||"").replace(/[^0-9]/g,"");
+  const esJuridica = datos.schemeID==="31"
+    || nitLimpio2.length >= 9
+    || /S\.A\.S|S\.A\b|LTDA|S\.C\.A|E\.U\.|S\.E\.M|E\.S\.P|INC\.|CORP\b|CIA\b|COMPAÑIA|EMPRESA|INDUSTRIA|COMERCIALIZADORA|DISTRIBUIDORA|CONSTRUCTORA|INGENIERIA|SERVICIOS|COLOMBIA|NACIONAL|INTERNACIONAL|GROUP|HOLDING|FONDO|UNION|ASOCIACION|COOPERATIVA|FUNDACION|CONSORCIO|TEMPORAL/.test(razon);
   const tlc = (datos.taxLevelCode||"").toUpperCase();
   let regimen = "Responsable IVA";
   if (tlc.includes("O-48")) regimen = "No Responsable IVA";
@@ -545,6 +506,9 @@ async function parsePDFFactura(archivo) {
 
 // ─── CORRECCIÓN 1 (cont): analizarConIA usa buildRetencionesTxt ───────────────
 async function analizarConIA(datos, tratamiento, tratIva, puc, _retencionesLegacy=[], contextoAprendizaje="") {
+  if (!puc || puc.length === 0) {
+    throw new Error("⚠️ El PUC de la empresa está vacío. Ve a ⚙️ → Empresas & PUC → Importar Excel antes de procesar facturas.");
+  }
   const pucTexto = puc.map(([c,n])=>`${c}\t${n}`).join("\n");
   const itemsTexto = datos.items?.length
     ? datos.items.map(i=>`- Cant ${i.cantidad} | ${i.descripcion} | $${i.valor.toLocaleString("es-CO")}`).join("\n")
@@ -567,9 +531,13 @@ async function analizarConIA(datos, tratamiento, tratIva, puc, _retencionesLegac
     : `IVA AL GASTO (consorcio): busca en el PUC cuenta de IVA transitorio o IVA servicios (61x o 51x). Si no existe deja cuenta_iva_codigo vacío.`;
 
   // Detectar persona del proveedor para las retenciones
+  // schemeID=31 → NIT empresa (jurídica); schemeID=13 → cédula (natural)
+  // NIT con 9+ dígitos casi siempre es empresa jurídica
   const razon = (datos.razonSocial||"").toUpperCase();
-  const esJuridica = datos.schemeID==="31" ||
-    /S\.A\.S|S\.A\.|LTDA|S\.C\.A|E\.U\.|INC\.|CORP|CIA|COMPAÑIA|EMPRESA|INDUSTRIA|COMERCIALIZADORA|DISTRIBUIDORA/.test(razon);
+  const nitLimpio = (datos.nitProveedor||"").replace(/[^0-9]/g,"");
+  const esJuridica = datos.schemeID==="31"
+    || nitLimpio.length >= 9
+    || /S\.A\.S|S\.A\b|LTDA|S\.C\.A|E\.U\.|S\.E\.M|E\.S\.P|INC\.|CORP\b|CIA\b|COMPAÑIA|EMPRESA|INDUSTRIA|COMERCIALIZADORA|DISTRIBUIDORA|CONSTRUCTORA|INGENIERIA|SERVICIOS|COLOMBIA|NACIONAL|INTERNACIONAL|GROUP|GROUP|HOLDING|FONDO|UNION|ASOCIACION|COOPERATIVA|FUNDACION|CONSORCIO|TEMPORAL/.test(razon);
 
   // CORRECCIÓN 1: usar buildRetencionesTxt con fecha y subtotal reales
   const retencionesTxt = buildRetencionesTxt(datos.fecha||"2026-01-01", datos.subtotal||0, esJuridica);
