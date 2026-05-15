@@ -570,8 +570,13 @@ function FacturaCard({ f, idx, docNum, onUpdate, onAprender }) {
         {hayAdv && <span style={{ background: "#2d2000", color: "#fbbf24", borderRadius: 20, padding: "2px 9px", fontSize: 11, fontWeight: 600 }}>⚠ Verificar cuenta</span>}
         {!cuadra && <span style={{ background: "#3b1f1f", color: "#f87171", borderRadius: 20, padding: "2px 9px", fontSize: 11, fontWeight: 600 }}>⚡ Descuadrado</span>}
         {f.aprobado && <span style={{ background: "#14532d", color: "#86efac", borderRadius: 20, padding: "2px 9px", fontSize: 11, fontWeight: 600 }}>✓ Aprobado</span>}
+        {f.enviado && <span style={{ background: "#2d1b4e", color: "#c084fc", borderRadius: 20, padding: "2px 9px", fontSize: 11, fontWeight: 600 }}>🚀 Enviada</span>}
         <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
           <button onClick={() => setExpandido(e => !e)} style={{ background: "transparent", border: "1px solid #2d3352", color: "#94a3b8", borderRadius: 6, padding: "3px 10px", cursor: "pointer", fontSize: 11 }}>{expandido ? "▲" : "▼ Asiento"}</button>
+          {f.enviado && (
+            <button onClick={() => { if(confirm("¿Eliminar esta factura? Ya fue enviada a ContaFlex.")) onUpdate(f.id, "_eliminar", true); }}
+              style={{ background: "transparent", border: "1px solid #3b1f1f", color: "#f87171", borderRadius: 6, padding: "3px 10px", cursor: "pointer", fontSize: 11 }}>🗑</button>
+          )}
           <button onClick={() => {
             if (!cuadra) { alert("El asiento está descuadrado. Revisa antes de aprobar."); return; }
             onUpdate(f.id, "asiento", filas);
@@ -968,6 +973,11 @@ function PanelCorreccion({ facturas, pucCuentas, onUpdate, onClose }) {
 }
 
 // ─── ENVIAR A CONTAFLEX ───────────────────────────────────────────────────────
+function generarId() {
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  return Array.from({length:8}, () => chars[Math.floor(Math.random()*chars.length)]).join("");
+}
+
 async function enviarAContaFlex(facturas, empresaActual, tipoCod = "CO") {
   if (!empresaActual?.id) throw new Error("No hay empresa seleccionada");
 
@@ -1017,6 +1027,7 @@ async function enviarAContaFlex(facturas, empresaActual, tipoCod = "CO") {
       const filaIva  = (f.asiento||[]).find(r => r.id === "iva");
 
       const comprobante = {
+        id:               generarId(),
         empresa_id:       empresaActual.id,
         tipo_doc:         tipoCod,
         numero:           String(ultimoNum),
@@ -1310,7 +1321,10 @@ export default function App() {
     setProcesando(false);
   };
 
-  const upd = (id, k, v) => setFacturas(p => p.map(f => f.id === id ? { ...f, [k]: v } : f));
+  const upd = (id, k, v) => {
+    if (k === "_eliminar") { setFacturas(p => p.filter(f => f.id !== id)); return; }
+    setFacturas(p => p.map(f => f.id === id ? { ...f, [k]: v } : f));
+  };
   const aprobadas = facturas.filter(f => f.aprobado && !f.error).sort((a, b) => (a.fecha || "").localeCompare(b.fecha || ""));
   const fmt = n => `$${Number(n || 0).toLocaleString("es-CO")}`;
 
@@ -1320,7 +1334,11 @@ export default function App() {
 
       {modal && <ModalTratamiento archivos={modal.archivos} empresaActual={empresaActual} empresas={empresas} onEmpresa={setEmpresaActual} onConfirm={confirmarTratamiento} onCancel={() => setModal(null)} />}
       {modalExport && <ModalExport facturas={facturas} onClose={() => setModalExport(false)} pucCuentas={pucCuentas} />}
-      {modalEnviar && <ModalEnviar facturas={facturas} empresaActual={empresaActual} onClose={() => setModalEnviar(false)} onEnviado={(res) => { setModalEnviar(false); }} />}
+      {modalEnviar && <ModalEnviar facturas={facturas} empresaActual={empresaActual} onClose={() => setModalEnviar(false)} onEnviado={(res) => {
+          setModalEnviar(false);
+          // Marcar facturas como enviadas en el estado local
+          res.forEach(f => upd(f.id, "enviado", true));
+        }} />}
       {modalCorreccion && <PanelCorreccion facturas={facturas} pucCuentas={pucCuentas} onUpdate={upd} onClose={() => setModalCorreccion(false)} />}
       {modalTerceros && (
         <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.92)",zIndex:3000,display:"flex",flexDirection:"column",padding:16}}>
@@ -1399,6 +1417,10 @@ export default function App() {
           {aprobadas.length > 0 && <button onClick={() => setModalEnviar(true)} style={{ background: "#8b5cf6", color: "#fff", border: "none", borderRadius: 6, padding: "5px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>🚀 ContaFlex</button>}
           {aprobadas.length > 0 && (
             <button onClick={() => { setFacturas(prev => prev.filter(f => !f.aprobado)); }} style={{ background: "transparent", border: "1px solid #166534", color: "#4ade80", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 600 }} title="Eliminar facturas aprobadas">🗑 Aprobadas</button>
+          )}
+          {facturas.some(f => f.enviado) && (
+            <button onClick={() => { if(confirm("¿Eliminar las facturas ya enviadas a ContaFlex?")) setFacturas(p => p.filter(f => !f.enviado)); }}
+              style={{ background: "transparent", border: "1px solid #166534", color: "#4ade80", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 600 }} title="Eliminar enviadas a ContaFlex">🗑 Enviadas</button>
           )}
           {facturas.length > 0 && <button onClick={limpiar} style={{ background: "transparent", border: "1px solid #2d3352", color: "#64748b", borderRadius: 6, padding: "4px 8px", cursor: "pointer", fontSize: 11 }} title="Limpiar todo">🗑 Todo</button>}
           <button onClick={() => setModalTerceros(true)} style={{ background: "transparent", border: "1px solid #2d3352", color: "#60a5fa", borderRadius: 6, padding: "4px 9px", cursor: "pointer", fontSize: 11, fontWeight: 600 }} title="Ver terceros">👥</button>
