@@ -302,7 +302,7 @@ REGLAS:
 Responde SOLO este JSON:
 {"concepto_general":"","tipo_retencion":"compras","lineas_contables":[{"descripcion":"","valor":0,"cuenta_codigo":"","cuenta_nombre":""}],"cuenta_iva_codigo":"","cuenta_iva_nombre":"","advertencia":""}`;
 
-  const data = await callClaude({ model: "claude-sonnet-4-20250514", max_tokens: 1000, messages: [{ role: "user", content: prompt }] });
+  const data = await callClaude({ model: "claude-sonnet-4-5", max_tokens: 1000, messages: [{ role: "user", content: prompt }] });
   const text = data.content?.map(b => b.text || "").join("").replace(/\`\`\`json|\`\`\`/g, "").trim();
   return JSON.parse(text);
 }
@@ -729,7 +729,7 @@ export default function App() {
           let datos = {};
           if (archivo.name.toLowerCase().endsWith(".pdf")) {
             const base64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.onerror = () => rej(new Error("No se pudo leer PDF")); r.readAsDataURL(archivo); });
-            const d = await callClaude({ model: "claude-sonnet-4-20250514", max_tokens: 1500, messages: [{ role: "user", content: [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }, { type: "text", text: `Extrae datos de esta factura. SOLO JSON sin markdown: {"prefijo":"","fecha":"YYYY-MM-DD","nitProveedor":"","razonSocial":"","schemeID":"31","subtotal":0,"totalIva":0,"total":0,"items":[{"descripcion":"","cantidad":1,"valor":0}]}` }] }] });
+            const d = await callClaude({ model: "claude-sonnet-4-5", max_tokens: 1500, messages: [{ role: "user", content: [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }, { type: "text", text: `Extrae datos de esta factura. SOLO JSON sin markdown: {"prefijo":"","fecha":"YYYY-MM-DD","nitProveedor":"","razonSocial":"","schemeID":"31","subtotal":0,"totalIva":0,"total":0,"items":[{"descripcion":"","cantidad":1,"valor":0}]}` }] }] });
             datos = JSON.parse(d.content.map(b => b.text || "").join("").replace(/```json|```/g, "").trim());
           } else {
             const t = await archivo.text(); datos = parseXML(t) || {};
