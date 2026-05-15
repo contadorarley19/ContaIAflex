@@ -1075,15 +1075,18 @@ async function enviarAContaFlex(facturas, empresaActual, tipoCod = "CO") {
         credito:        r.tipo === "credito" ? r.valor : 0,
       }));
 
+      console.log(`[ContaFlex] Insertando ${detalles.length} detalles para comprobante ${compId}:`, detalles);
       const rDet = await fetch(`${SB_URL}/rest/v1/comprobante_detalles`, {
         method: "POST",
-        headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+        headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json", Prefer: "return=representation" },
         body: JSON.stringify(detalles)
       });
 
+      const detText = await rDet.text();
+      console.log(`[ContaFlex] Respuesta detalles (${rDet.status}):`, detText);
+
       if (!rDet.ok) {
-        const err = await rDet.text();
-        errores.push(`${f.razonSocial} (detalles): ${err}`);
+        errores.push(`${f.razonSocial} (detalles): ${detText}`);
       } else {
         resultados.push({ ...f, compNumero: ultimoNum });
       }
