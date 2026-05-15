@@ -275,34 +275,25 @@ async function analizarConIA(datos, tratamiento, tratIva, pucCuentas) {
     return cod.startsWith("61") || cod.startsWith("51");
   }).filter(c => /iva|impuesto.*venta/i.test(c.nombre)).map(c => `${c.codigo}\t${c.nombre}`).join("\n");
 
-  const prompt = `Eres contador colombiano. Analiza esta factura y responde SOLO JSON válido.
+  const prompt = `Contador colombiano. SOLO JSON, sin texto extra.
 
-FACTURA:
-Proveedor: ${datos.razonSocial} | NIT: ${datos.nitProveedor} | Fecha: ${datos.fecha}
-Ítems: ${itemsTexto}
-Subtotal: $${(datos.subtotal||0).toLocaleString("es-CO")} | IVA: $${(datos.totalIva||0).toLocaleString("es-CO")}
+FACTURA: ${datos.razonSocial} | ${datos.fecha}
+ITEMS: ${itemsTexto}
+SUBTOTAL: $${(datos.subtotal||0).toLocaleString("es-CO")} | IVA: $${(datos.totalIva||0).toLocaleString("es-CO")}
+TRATAMIENTO: ${tratamiento === "inventario" ? "INVENTARIO-cuentas 1x" : "GASTO-cuentas 6x/5x"}
 
-TRATAMIENTO: ${tratamiento === "inventario" ? "INVENTARIO — cuentas clase 1" : "COSTO/GASTO — cuentas clase 6 o 5"}
+PUC (SOLO estas cuentas):
+${pucTexto || "(vacío)"}
 
-CUENTAS DISPONIBLES EN EL PUC (SOLO usa estas):
-${pucTexto || "(sin cuentas disponibles)"}
-
-TIPOS DE RETENCIÓN (elige el que corresponde):
-compras | servicios | honorarios | transporte | arrend_inmueble | arrend_mueble | obra_civil | vigilancia | combustibles | comisiones | no_aplica
-
-CUENTAS IVA DISPONIBLES:
+IVA (SOLO estas):
 ${cuentasIva || "(ninguna)"}
 
-REGLAS:
-1. tipo_retencion: elige el tipo según la naturaleza real de la transacción.
-2. lineas_contables: SOLO cuentas del PUC listado arriba. Si son varios ítems similares, agrúpalos en una sola línea.
-3. cuenta_iva_codigo: solo si hay IVA > 0 y existe cuenta en la lista de IVA.
-4. concepto_general: descripción corta del gasto (máx 60 chars).
+tipo_retencion: compras|servicios|honorarios|transporte|arrend_inmueble|arrend_mueble|obra_civil|vigilancia|combustibles|comisiones|no_aplica
 
-Responde SOLO este JSON:
+JSON:
 {"concepto_general":"","tipo_retencion":"compras","lineas_contables":[{"descripcion":"","valor":0,"cuenta_codigo":"","cuenta_nombre":""}],"cuenta_iva_codigo":"","cuenta_iva_nombre":"","advertencia":""}`;
 
-  const data = await callClaude({ model: "claude-sonnet-4-5", max_tokens: 1000, messages: [{ role: "user", content: prompt }] });
+  const data = await callClaude({ model: "claude-sonnet-4-5", max_tokens: 400, messages: [{ role: "user", content: prompt }] });
   const text = data.content?.map(b => b.text || "").join("").replace(/\`\`\`json|\`\`\`/g, "").trim();
   return JSON.parse(text);
 }
@@ -762,8 +753,8 @@ export default function App() {
           setFacturas(prev => [...prev, { id: Date.now() + Math.random(), fechaCarga: new Date().toISOString(), archivo: archivo.name, error: e.message }]);
         }
       })(archivos[i]);
-      // Espera entre facturas para evitar overload en API Claude
-      if (i < archivos.length - 1) await sleep(archivos.length > 5 ? 5000 : 3000);
+      // Espera entre facturas — 3s siempre para evitar rate limit
+      if (i < archivos.length - 1) await sleep(3000);
     }
     setProcesando(false);
   };
