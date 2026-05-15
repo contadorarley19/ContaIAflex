@@ -125,20 +125,59 @@ function calcularRetencion(tipo, persona, fecha, subtotal, pucCuentas, esAutorre
 
   const valor = Math.round(subtotal * fila.r / 100);
 
-  // Buscar cuenta en PUC de la empresa
-  const patronKey = `${tipo}_${pNorm === "no_decl" ? "no_decl" : pNorm === "ambas" ? "ambas" : pNorm}`;
-  const patrones  = RETE_CUENTA_PATRON[`${tipo}_${pNorm}`] || RETE_CUENTA_PATRON[`${tipo}_ambas`] || [];
+  // Buscar cuenta retención en PUC — tabla directa por tipo+persona+tarifa
+  // Busca cuentas 23x cuyo nombre contenga la tarifa y el concepto
   let cuenta = null;
-  if (patrones.length > 0 && pucCuentas.length > 0) {
-    // Buscar cuenta 23x que coincida con los patrones
-    const cands = pucCuentas.filter(c => c.codigo.startsWith("23") || c.codigo.startsWith("13"));
-    cuenta = cands.find(c => {
+  if (pucCuentas.length > 0) {
+    const cands23 = pucCuentas.filter(c => c.codigo.startsWith("23"));
+    const tarifaStr = String(fila.r).replace(".", ",");
+    const tarifaStr2 = String(fila.r);
+
+    // Función de búsqueda por coincidencia en nombre
+    const buscar = (terminos) => cands23.find(c => {
       const nom = (c.nombre || "").toLowerCase();
-      return patrones.every(p => nom.includes(p.toLowerCase()) || nom.includes(p.replace("%","").trim()));
-    }) || cands.find(c => {
-      const nom = (c.nombre || "").toLowerCase();
-      return patrones.some(p => nom.includes(p.toLowerCase()));
+      return terminos.every(t => nom.includes(t.toLowerCase()));
     });
+
+    // Buscar por nombre exacto según PUC real de la empresa
+    // Patrones basados en nombres reales: "compras del 2.5% persona juridica"
+    if (tipo === "compras" && pNorm === "juridica")
+      cuenta = buscar(["2.5","juridica"]) || buscar(["2.5","compra"]) || buscar(["compra","juridica"]);
+    else if (tipo === "compras" && pNorm === "natural")
+      cuenta = buscar(["2.5","natural"]) || buscar(["3.5","natural"]) || buscar(["compra","natural"]);
+    else if (tipo === "compras" && pNorm === "no_decl")
+      cuenta = buscar(["3.5","natural"]) || buscar(["3.5","compra"]) || buscar(["compra","natural"]);
+    else if (tipo === "honorarios" && pNorm === "juridica")
+      cuenta = buscar(["11","honor","juridica"]) || buscar(["11","honor"]);
+    else if (tipo === "honorarios")
+      cuenta = buscar(["10","honor","natural"]) || buscar(["10","honor"]);
+    else if (tipo === "servicios" && pNorm === "juridica")
+      cuenta = buscar(["4","serv","juridica"]) || buscar(["4","serv"]);
+    else if (tipo === "servicios")
+      cuenta = buscar(["4","serv","natural"]) || buscar(["6","serv"]) || buscar(["serv","natural"]);
+    else if (tipo === "transporte" && pNorm === "juridica")
+      cuenta = buscar(["1","transport","juridica"]) || buscar(["1","carga","juridica"]) || buscar(["transport"]);
+    else if (tipo === "transporte")
+      cuenta = buscar(["1","transport","natural"]) || buscar(["1","carga"]) || buscar(["transport"]);
+    else if (tipo === "arrend_inmueble")
+      cuenta = buscar(["3.5","arrend"]) || buscar(["arrend","inmueble"]) || buscar(["arrend"]);
+    else if (tipo === "arrend_mueble")
+      cuenta = buscar(["4","arrend"]) || buscar(["mueble","arrend"]);
+    else if (tipo === "obra_civil")
+      cuenta = buscar(["2","obra"]) || buscar(["obra"]);
+    else if (tipo === "vigilancia")
+      cuenta = buscar(["2","vigil"]) || buscar(["aseo","vigil"]) || buscar(["vigil"]);
+    else if (tipo === "combustibles" && pNorm === "juridica")
+      cuenta = buscar(["0.1","juridica"]) || buscar(["0.1","combust"]) || buscar(["combustible","juridica"]);
+    else if (tipo === "combustibles")
+      cuenta = buscar(["0.1","natural"]) || buscar(["0.1","combust"]) || buscar(["combustible","natural"]);
+    else if (tipo === "comisiones" && pNorm === "juridica")
+      cuenta = buscar(["11","comis","juridica"]) || buscar(["11","comis"]);
+    else if (tipo === "comisiones")
+      cuenta = buscar(["10","comis","natural"]) || buscar(["10","comis"]);
+
+    // Fallback: buscar por tarifa exacta en cuentas 23x
+    if (!cuenta) cuenta = buscar([tarifaStr2,"juridica"]) || buscar([tarifaStr2,"natural"]) || buscar([tarifaStr2]);
   }
 
   return {
@@ -149,24 +188,30 @@ function calcularRetencion(tipo, persona, fecha, subtotal, pucCuentas, esAutorre
 }
 
 // Detectar persona jurídica/natural
-// Fuente: XMLs reales DIAN
-// AdditionalAccountID: 1=jurídica, 2=natural (campo más confiable)
-// schemeID en CompanyID: 1,2,3,8,9=NIT(jurídica) | 6,13=cédula(natural)
+// Regla: NIT de 9+ dígitos SIEMPRE es jurídica (Colombia)
+// Cédula tiene máximo 10 dígitos pero NIT empresarial tiene exactamente 9
+// AdditionalAccountID puede venir mal en algunos XMLs — NIT es más confiable
 function detectarPersona(nitStr, razonSocial, schemeID, additionalAccountID) {
-  // 1. AdditionalAccountID es el campo más confiable
-  if (additionalAccountID === "2") return "natural";
-  if (additionalAccountID === "1") return "juridica";
-  // 2. schemeID del CompanyID
-  const schemeNIT = ["1","2","3","4","5","8","9"]; // NIT → jurídica
-  const schemeCed = ["6","13"];                     // Cédula → natural
-  if (schemeNIT.includes(schemeID)) return "juridica";
-  if (schemeCed.includes(schemeID)) return "natural";
-  // 3. Longitud NIT (9+ dígitos = empresa)
   const nit = (nitStr || "").replace(/[^0-9]/g, "");
-  if (nit.length >= 9) return "juridica";
-  // 4. Razón social
   const razon = (razonSocial || "").toUpperCase();
-  if (/S\.A\.S|S\.A\b|LTDA|S\.C\.A|E\.U\.|E\.S\.P|S\.E\.M|INC\.|CORP\b|CIA\b|COMPAÑIA|EMPRESA|INDUSTRIA|COMERCIALIZADORA|DISTRIBUIDORA|CONSTRUCTORA|INGENIERIA|COLOMBIA|CONSORCIO|TEMPORAL|FUNDACION|COOPERATIVA|ASOCIACION/.test(razon)) return "juridica";
+
+  // NIT exactamente 9 dígitos = empresa jurídica (regla Colombia)
+  if (nit.length === 9) return "juridica";
+
+  // schemeID cédula → natural (solo si NIT no es de 9 dígitos)
+  const schemeCed = ["6","13"];
+  if (schemeCed.includes(schemeID)) return "natural";
+
+  // AdditionalAccountID
+  if (additionalAccountID === "2" && nit.length < 9) return "natural";
+  if (additionalAccountID === "1") return "juridica";
+
+  // Razón social
+  if (/S\.A\.S|S\.A\b|LTDA|S\.C\.A|E\.U\.|E\.S\.P|S\.E\.M|INC\.|CORP\b|CIA\b|COMPAÑIA|EMPRESA|INDUSTRIA|COMERCIALIZADORA|DISTRIBUIDORA|CONSTRUCTORA|INGENIERIA|COLOMBIA|CONSORCIO|TEMPORAL|FUNDACION|COOPERATIVA|ASOCIACION|GRUPO/.test(razon)) return "juridica";
+
+  // NIT largo (10 dígitos con DV) también es jurídica
+  if (nit.length >= 9) return "juridica";
+
   return "natural";
 }
 
@@ -332,8 +377,10 @@ function construirAsiento(datos, ia, rete, pucCuentas, esAutorretenedor, tratIva
 
   // 4. Proveedor (diferencia)
   const neto = Math.max(0, totalDeb - totalCre);
-  // Buscar cuenta proveedores en PUC
-  const ctaProv = pucCuentas.find(c => /proveedor/i.test(c.nombre) && c.codigo.startsWith("22")) || { codigo: "22050101", nombre: "Proveedores nacionales" };
+  // Buscar cuenta proveedores en PUC — código completo 8 dígitos
+  const ctaProv = pucCuentas.find(c => /proveedor/i.test(c.nombre) && c.codigo.startsWith("22") && c.codigo.length === 8)
+    || pucCuentas.find(c => /proveedor/i.test(c.nombre) && c.codigo.startsWith("22"))
+    || { codigo: "22050101", nombre: "Proveedores nacionales" };
   filas.push({ id: "prov", tipo: "credito", cuenta: ctaProv.codigo, descripcion: `Proveedor — ${(datos.razonSocial || "").slice(0, 40)}`, valor: neto, editable: true, eliminable: false, advertencia: false, editadoManual: false });
 
   return filas;
