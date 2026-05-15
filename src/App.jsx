@@ -1016,11 +1016,13 @@ async function enviarAContaFlex(facturas, empresaActual, tipoCod = "CO") {
     for (const f of facts) {
       ultimoNum++;
       const nit = (f.nitProveedor||"").replace(/[^0-9]/g,"");
-      const subtotal = f.subtotal || 0;
-      const iva      = f.totalIva || 0;
-      const rete     = f.retefuente || 0;
-      const reteica  = f.retica || 0;
-      const neto     = (f.total||0) - rete - reteica;
+      const subtotal   = f.subtotal || 0;
+      const iva        = f.totalIva || 0;
+      const rete       = f.retefuente || 0;
+      const reteica    = f.retica || 0;
+      const neto       = (f.total||0) - rete - reteica;
+      const retePct    = f.rete?.pct || f.reteInfo?.pct || 0;
+      const reteBase   = rete > 0 ? subtotal : 0;
 
       // Buscar cuenta retención del asiento
       const filaRete = (f.asiento||[]).find(r => r.id === "rete");
@@ -1049,8 +1051,8 @@ async function enviarAContaFlex(facturas, empresaActual, tipoCod = "CO") {
         concepto:         f.ia?.concepto_general || f.razonSocial || "",
         estado:           "activo",
         valor_bruto:      subtotal,
-        base_retefuente:  rete > 0 ? subtotal : 0,
-        tarifa_retefuente: f.rete?.pct || 0,
+        base_retefuente:  reteBase,
+        tarifa_retefuente: retePct,
         valor_retefuente: rete,
         cuenta_retefuente: filaRete?.cuenta || "",
         base_iva:         iva > 0 ? subtotal : 0,
