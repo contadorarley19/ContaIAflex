@@ -1052,10 +1052,11 @@ async function enviarAContaFlex(facturas, empresaActual, tipoCod = "CO") {
         detalles:         "",
       };
 
-      // Insertar comprobante
+      // Insertar comprobante — usamos el id que generamos nosotros
+      const compId = comprobante.id;
       const rComp = await fetch(`${SB_URL}/rest/v1/comprobantes`, {
         method: "POST",
-        headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json", Prefer: "return=representation" },
+        headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
         body: JSON.stringify(comprobante)
       });
 
@@ -1065,32 +1066,25 @@ async function enviarAContaFlex(facturas, empresaActual, tipoCod = "CO") {
         continue;
       }
 
-      const compData = await rComp.json();
-      const compId = compData[0]?.id;
+      // Insertar detalles del asiento usando el mismo compId
+      const detalles = (f.asiento||[]).map(r => ({
+        comprobante_id: compId,
+        cuenta:         r.cuenta,
+        descripcion:    r.descripcion,
+        debito:         r.tipo === "debito" ? r.valor : 0,
+        credito:        r.tipo === "credito" ? r.valor : 0,
+      }));
 
-      if (compId) {
-        // Insertar detalles del asiento
-        const detalles = (f.asiento||[]).map(r => ({
-          comprobante_id: compId,
-          cuenta:         r.cuenta,
-          descripcion:    r.descripcion,
-          debito:         r.tipo === "debito" ? r.valor : 0,
-          credito:        r.tipo === "credito" ? r.valor : 0,
-        }));
+      const rDet = await fetch(`${SB_URL}/rest/v1/comprobante_detalles`, {
+        method: "POST",
+        headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+        body: JSON.stringify(detalles)
+      });
 
-        await fetch(`${SB_URL}/rest/v1/comprobante_detalles`, {
-          method: "POST",
-          headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
-          body: JSON.stringify(detalles)
-        });
-
-        // Marcar en dian_facturas como enviada
-        await fetch(`${SB_URL}/rest/v1/dian_facturas?empresa_nit=eq.${empresaActual.nit}&prefijo=eq.${encodeURIComponent(f.prefijo||"")}`, {
-          method: "PATCH",
-          headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ aprobado: true })
-        });
-
+      if (!rDet.ok) {
+        const err = await rDet.text();
+        errores.push(`${f.razonSocial} (detalles): ${err}`);
+      } else {
         resultados.push({ ...f, compNumero: ultimoNum });
       }
     }
