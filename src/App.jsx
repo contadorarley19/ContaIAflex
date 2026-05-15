@@ -801,8 +801,17 @@ export default function App() {
           {!cargando && empresaActual && <div style={{ background: "#0a1a0a", border: "1px solid #166534", borderRadius: 5, padding: "3px 9px", fontSize: 10, color: "#4ade80", fontWeight: 600 }}>✓ {pucCuentas.length} cuentas PUC</div>}
           <div style={{ fontSize: 10, color: "#64748b" }}>👤 {usuarioActual?.usuario || usuarioActual?.nombre}</div>
           {facturas.length > 0 && <div style={{ fontSize: 11, color: "#64748b" }}><span style={{ color: "#4f7cff", fontWeight: 700 }}>{facturas.filter(f => !f.error).length}</span>/<span style={{ color: "#22c55e", fontWeight: 700 }}>{aprobadas.length}</span></div>}
+          {facturas.filter(f => !f.aprobado && !f.error && f.asiento).length > 0 && (
+            <button onClick={() => {
+              const cuadradas = facturas.filter(f => !f.aprobado && !f.error && f.asiento);
+              cuadradas.forEach(f => { upd(f.id, "aprobado", true); });
+            }} style={{ background: "#4f7cff", color: "#fff", border: "none", borderRadius: 6, padding: "5px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>✓ Aprobar todas</button>
+          )}
           {aprobadas.length > 0 && <button onClick={() => setModalExport(true)} style={{ background: "#22c55e", color: "#fff", border: "none", borderRadius: 6, padding: "5px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>⬇ Excel</button>}
-          {facturas.length > 0 && <button onClick={limpiar} style={{ background: "transparent", border: "1px solid #2d3352", color: "#64748b", borderRadius: 6, padding: "4px 8px", cursor: "pointer", fontSize: 11 }}>🗑</button>}
+          {aprobadas.length > 0 && (
+            <button onClick={() => { setFacturas(prev => prev.filter(f => !f.aprobado)); }} style={{ background: "transparent", border: "1px solid #166534", color: "#4ade80", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 600 }} title="Eliminar facturas aprobadas">🗑 Aprobadas</button>
+          )}
+          {facturas.length > 0 && <button onClick={limpiar} style={{ background: "transparent", border: "1px solid #2d3352", color: "#64748b", borderRadius: 6, padding: "4px 8px", cursor: "pointer", fontSize: 11 }} title="Limpiar todo">🗑 Todo</button>}
           <button onClick={() => { setUsuarioActual(null); limpiar(); }} style={{ background: "transparent", border: "1px solid #3b1f1f", color: "#f87171", borderRadius: 6, padding: "4px 9px", cursor: "pointer", fontSize: 11, fontWeight: 600 }}>🚪</button>
         </div>
       </div>
