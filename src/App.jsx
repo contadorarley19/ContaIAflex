@@ -560,7 +560,7 @@ function FacturaCard({ f, idx, docNum, onUpdate, onAprender }) {
   );
 
   return (
-    <div style={{ background: "#161923", border: `1px solid ${f.aprobado ? "#166534" : cuadra ? "#232840" : "#7c3700"}`, borderRadius: 12, overflow: "hidden" }}>
+    <div id={`factura-${f.id}`} style={{ background: "#161923", border: `1px solid ${f.aprobado ? "#166534" : cuadra ? "#232840" : "#7c3700"}`, borderRadius: 12, overflow: "hidden" }}>
       {/* Cabecera */}
       <div style={{ background: "#0d101a", borderBottom: "1px solid #1e2235", padding: "8px 16px", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <span style={{ fontSize: 11, color: "#475569", fontWeight: 600 }}>#{String(idx + 1).padStart(2, "0")}</span>
@@ -879,6 +879,7 @@ function PanelCorreccion({ facturas, pucCuentas, onUpdate, onClose }) {
 
   const lista = Object.values(cuentasUsadas).sort((a,b) => (a.enPuc===b.enPuc)?0:a.enPuc?1:-1);
   const [correcciones, setCorrecciones] = useState({});
+  const [verFacturas, setVerFacturas] = useState(null); // cuenta seleccionada para ver facturas
 
   const aplicarCorrecciones = () => {
     Object.entries(correcciones).forEach(([cuentaVieja, cuentaNueva]) => {
@@ -922,7 +923,12 @@ function PanelCorreccion({ facturas, pucCuentas, onUpdate, onClose }) {
                 <tr key={c.codigo} style={{borderBottom:"1px solid #1a1d27",background:!c.enPuc?"#1a0a0a":"transparent"}}>
                   <td style={{padding:"6px 10px",fontFamily:"monospace",color:c.enPuc?"#60a5fa":"#f87171",fontWeight:600}}>{c.codigo}</td>
                   <td style={{padding:"6px 10px",color:"#94a3b8",maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.nombrePuc||c.descripcion}</td>
-                  <td style={{padding:"6px 10px",color:"#64748b",textAlign:"center"}}>{c.count}</td>
+                  <td style={{padding:"6px 10px",textAlign:"center"}}>
+                    <button onClick={() => setVerFacturas(verFacturas===c.codigo?null:c.codigo)}
+                      style={{background:"#1e2a3a",border:"1px solid #2d3f6e",color:"#60a5fa",borderRadius:5,padding:"2px 10px",cursor:"pointer",fontSize:11,fontWeight:600}}>
+                      {c.count} ver
+                    </button>
+                  </td>
                   <td style={{padding:"6px 10px",textAlign:"center"}}>{c.enPuc?<span style={{color:"#22c55e"}}>✓</span>:<span style={{color:"#f87171"}}>✗</span>}</td>
                   <td style={{padding:"6px 10px"}}>
                     <select onChange={e => setCorrecciones(p => ({...p,[c.codigo]:e.target.value}))}
@@ -934,9 +940,277 @@ function PanelCorreccion({ facturas, pucCuentas, onUpdate, onClose }) {
                     </select>
                   </td>
                 </tr>
+                {verFacturas === c.codigo && (
+                  <tr key={c.codigo+"_det"}>
+                    <td colSpan={5} style={{padding:"0 10px 10px",background:"#0a0d14"}}>
+                      <div style={{background:"#0d101a",border:"1px solid #2d3f6e",borderRadius:8,padding:"8px 12px"}}>
+                        <div style={{fontSize:10,color:"#60a5fa",fontWeight:600,marginBottom:6}}>
+                          Facturas que usan cuenta {c.codigo}:
+                        </div>
+                        {facturas.filter(f => f.asiento && (f.asiento||[]).some(r=>r.cuenta===c.codigo)).map(f=>(
+                          <div key={f.id} style={{display:"flex",gap:10,padding:"4px 0",borderBottom:"1px solid #1a1d27",fontSize:11,alignItems:"center"}}>
+                            <span style={{fontFamily:"monospace",color:"#94a3b8",minWidth:80}}>{f.prefijo||f.archivo?.slice(0,12)}</span>
+                            <span style={{color:"#cbd5e1",flex:1}}>{f.razonSocial||f.archivo}</span>
+                            <span style={{color:"#64748b"}}>{f.fecha}</span>
+                            <span style={{fontFamily:"monospace",color:"#4ade80",minWidth:90,textAlign:"right"}}>${(f.total||0).toLocaleString("es-CO")}</span>
+                            <span style={{
+                              background: f.aprobado?"#14532d":"#1e2a3a",
+                              color: f.aprobado?"#86efac":"#60a5fa",
+                              borderRadius:4,padding:"1px 7px",fontSize:10,fontWeight:600
+                            }}>{f.aprobado?"✓ Aprobada":"Pendiente"}</span>
+                            <button onClick={() => {
+                              onClose();
+                              setTimeout(() => {
+                                const el = document.getElementById(`factura-${f.id}`);
+                                if (el) { el.scrollIntoView({behavior:"smooth",block:"center"}); el.style.outline="2px solid #4f7cff"; setTimeout(()=>el.style.outline="",2000); }
+                              }, 200);
+                            }} style={{background:"#4f7cff",color:"#fff",border:"none",borderRadius:5,padding:"2px 9px",cursor:"pointer",fontSize:10,fontWeight:700,whiteSpace:"nowrap"}}>
+                              → Ver
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </td>
+                  </tr>
+                )}
               ))}
             </tbody>
           </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── ENVIAR A CONTAFLEX ───────────────────────────────────────────────────────
+async function enviarAContaFlex(facturas, empresaActual, tipoCod = "CO") {
+  if (!empresaActual?.id) throw new Error("No hay empresa seleccionada");
+
+  // Ordenar por fecha
+  const aprobadas = [...facturas]
+    .filter(f => f.aprobado && !f.error && f.asiento)
+    .sort((a,b) => (a.fecha||"").localeCompare(b.fecha||""));
+
+  if (aprobadas.length === 0) throw new Error("No hay facturas aprobadas para enviar");
+
+  // Obtener último consecutivo por año
+  const porAnno = {};
+  aprobadas.forEach(f => {
+    const anno = (f.fecha||"2026").slice(0,4);
+    if (!porAnno[anno]) porAnno[anno] = [];
+    porAnno[anno].push(f);
+  });
+
+  const resultados = [];
+  let errores = [];
+
+  for (const [anno, facts] of Object.entries(porAnno)) {
+    // Consultar último número de ese año y tipo
+    let url = `${SB_URL}/rest/v1/comprobantes?select=numero&empresa_id=eq.${empresaActual.id}&tipo_doc=eq.${tipoCod}&fecha=gte.${anno}-01-01&fecha=lte.${anno}-12-31&order=numero.desc&limit=1`;
+    let ultimoNum = 0;
+    try {
+      const r = await fetch(url, { headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}` } });
+      const rows = await r.json();
+      if (rows && rows.length > 0) {
+        const n = parseInt(String(rows[0].numero).replace(/[^0-9]/g,"")) || 0;
+        ultimoNum = n;
+      }
+    } catch(e) { console.warn("Error consultando consecutivo:", e); }
+
+    // Insertar cada factura
+    for (const f of facts) {
+      ultimoNum++;
+      const nit = (f.nitProveedor||"").replace(/[^0-9]/g,"");
+      const subtotal = f.subtotal || 0;
+      const iva      = f.totalIva || 0;
+      const rete     = f.retefuente || 0;
+      const reteica  = f.retica || 0;
+      const neto     = (f.total||0) - rete - reteica;
+
+      // Buscar cuenta retención del asiento
+      const filaRete = (f.asiento||[]).find(r => r.id === "rete");
+      const filaIva  = (f.asiento||[]).find(r => r.id === "iva");
+
+      const comprobante = {
+        empresa_id:       empresaActual.id,
+        tipo_doc:         tipoCod,
+        numero:           String(ultimoNum),
+        fecha:            f.fecha || new Date().toISOString().slice(0,10),
+        tercero_nit:      nit,
+        tercero_nombre:   f.razonSocial || "",
+        concepto:         f.ia?.concepto_general || f.razonSocial || "",
+        estado:           "activo",
+        valor_bruto:      subtotal,
+        base_retefuente:  rete > 0 ? subtotal : 0,
+        tarifa_retefuente: f.rete?.pct || 0,
+        valor_retefuente: rete,
+        cuenta_retefuente: filaRete?.cuenta || "",
+        base_iva:         iva > 0 ? subtotal : 0,
+        tarifa_iva:       iva > 0 ? 19 : 0,
+        valor_iva:        iva,
+        cuenta_iva:       filaIva?.cuenta || "",
+        base_reteiva:     0, tarifa_reteiva: 0, valor_reteiva: 0, cuenta_reteiva: "",
+        base_reteica:     reteica > 0 ? subtotal : 0,
+        tarifa_reteica:   0, valor_reteica: reteica, cuenta_reteica: "",
+        neto_pagar:       neto,
+        detalles:         "",
+      };
+
+      // Insertar comprobante
+      const rComp = await fetch(`${SB_URL}/rest/v1/comprobantes`, {
+        method: "POST",
+        headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json", Prefer: "return=representation" },
+        body: JSON.stringify(comprobante)
+      });
+
+      if (!rComp.ok) {
+        const err = await rComp.text();
+        errores.push(`${f.razonSocial}: ${err}`);
+        continue;
+      }
+
+      const compData = await rComp.json();
+      const compId = compData[0]?.id;
+
+      if (compId) {
+        // Insertar detalles del asiento
+        const detalles = (f.asiento||[]).map(r => ({
+          comprobante_id: compId,
+          cuenta:         r.cuenta,
+          descripcion:    r.descripcion,
+          debito:         r.tipo === "debito" ? r.valor : 0,
+          credito:        r.tipo === "credito" ? r.valor : 0,
+        }));
+
+        await fetch(`${SB_URL}/rest/v1/comprobante_detalles`, {
+          method: "POST",
+          headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json", Prefer: "return=minimal" },
+          body: JSON.stringify(detalles)
+        });
+
+        // Marcar en dian_facturas como enviada
+        await fetch(`${SB_URL}/rest/v1/dian_facturas?empresa_nit=eq.${empresaActual.nit}&prefijo=eq.${encodeURIComponent(f.prefijo||"")}`, {
+          method: "PATCH",
+          headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ aprobado: true })
+        });
+
+        resultados.push({ ...f, compNumero: ultimoNum });
+      }
+    }
+  }
+
+  return { resultados, errores };
+}
+
+// ─── MODAL ENVIAR A CONTAFLEX ─────────────────────────────────────────────────
+function ModalEnviar({ facturas, empresaActual, onClose, onEnviado }) {
+  const aprobadas = facturas.filter(f => f.aprobado && !f.error && f.asiento)
+    .sort((a,b) => (a.fecha||"").localeCompare(b.fecha||""));
+  const [tipoCod,   setTipoCod]   = useState("CO");
+  const [enviando,  setEnviando]  = useState(false);
+  const [resultado, setResultado] = useState(null);
+  const fmt = n => `$${Number(n||0).toLocaleString("es-CO")}`;
+
+  const enviar = async () => {
+    setEnviando(true);
+    try {
+      const res = await enviarAContaFlex(facturas, empresaActual, tipoCod);
+      setResultado(res);
+      if (res.resultados.length > 0) onEnviado(res.resultados);
+    } catch(e) {
+      setResultado({ resultados:[], errores:[e.message] });
+    }
+    setEnviando(false);
+  };
+
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.92)",zIndex:3000,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+      <div style={{background:"#161923",border:"1px solid #232840",borderRadius:16,maxWidth:700,width:"100%",maxHeight:"90vh",display:"flex",flexDirection:"column"}}>
+        <div style={{padding:"14px 20px",borderBottom:"1px solid #1e2235",display:"flex",alignItems:"center",gap:12}}>
+          <div style={{fontFamily:"sans-serif",fontWeight:700,fontSize:15,color:"#fff"}}>🚀 Enviar a ContaFlex</div>
+          <span style={{fontSize:11,color:"#64748b"}}>{aprobadas.length} facturas aprobadas</span>
+          <button onClick={onClose} style={{marginLeft:"auto",background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",borderRadius:6,padding:"4px 10px",cursor:"pointer",fontSize:12}}>✕</button>
+        </div>
+
+        <div style={{flex:1,overflowY:"auto",padding:"16px 20px"}}>
+          {!resultado ? (
+            <>
+              <div style={{background:"#0a1a0a",border:"1px solid #166534",borderRadius:8,padding:"10px 14px",marginBottom:16,fontSize:12,color:"#4ade80"}}>
+                ✓ Las facturas se insertarán en <strong>comprobantes</strong> y <strong>comprobante_detalles</strong> de ContaFlex, ordenadas por fecha con consecutivo automático.
+              </div>
+
+              <div style={{marginBottom:16}}>
+                <div style={{fontSize:10,color:"#64748b",fontWeight:600,textTransform:"uppercase",letterSpacing:".07em",marginBottom:6}}>Tipo de comprobante</div>
+                <div style={{display:"flex",gap:8}}>
+                  {["CO","FC","CE"].map(t => (
+                    <button key={t} onClick={() => setTipoCod(t)} style={{background:tipoCod===t?"#1e2a3a":"#0f1117",border:`2px solid ${tipoCod===t?"#4f7cff":"#232840"}`,color:tipoCod===t?"#60a5fa":"#64748b",borderRadius:8,padding:"8px 20px",cursor:"pointer",fontSize:13,fontWeight:700}}>
+                      {t}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div style={{background:"#0d101a",borderRadius:8,border:"1px solid #1e2235",overflow:"hidden",marginBottom:16}}>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                  <thead><tr style={{background:"#131620"}}>
+                    {["Fecha","Proveedor","N° Factura","Total","Neto"].map(h =>
+                      <th key={h} style={{padding:"6px 10px",textAlign:"left",color:"#475569",fontSize:10,fontWeight:600,borderBottom:"1px solid #1e2235"}}>{h}</th>
+                    )}
+                  </tr></thead>
+                  <tbody>
+                    {aprobadas.map((f,i) => (
+                      <tr key={f.id} style={{borderBottom:"1px solid #1a1d27",background:i%2===0?"transparent":"#0a0d14"}}>
+                        <td style={{padding:"5px 10px",color:"#94a3b8"}}>{f.fecha}</td>
+                        <td style={{padding:"5px 10px",color:"#cbd5e1",maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{f.razonSocial}</td>
+                        <td style={{padding:"5px 10px",color:"#64748b",fontFamily:"monospace"}}>{f.prefijo}</td>
+                        <td style={{padding:"5px 10px",color:"#4ade80",fontWeight:600}}>{fmt(f.total)}</td>
+                        <td style={{padding:"5px 10px",color:"#fbbf24",fontWeight:600}}>{fmt((f.total||0)-(f.retefuente||0)-(f.retica||0))}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              <div style={{background:"#0f1a2e",border:"1px solid #1e3a5f",borderRadius:8,padding:"10px 14px",fontSize:12,color:"#60a5fa"}}>
+                <strong>Empresa:</strong> {empresaActual?.nombre} · {empresaActual?.nit}<br/>
+                <strong>Tipo doc:</strong> {tipoCod} · <strong>Consecutivo:</strong> automático por año de fecha factura<br/>
+                <strong>Ordenado por:</strong> fecha ascendente
+              </div>
+            </>
+          ) : (
+            <div>
+              {resultado.resultados.length > 0 && (
+                <div style={{background:"#0a1a0a",border:"1px solid #166534",borderRadius:8,padding:"12px 16px",marginBottom:12}}>
+                  <div style={{fontSize:13,fontWeight:700,color:"#4ade80",marginBottom:8}}>✓ {resultado.resultados.length} facturas enviadas a ContaFlex</div>
+                  {resultado.resultados.map(f => (
+                    <div key={f.id} style={{fontSize:11,color:"#94a3b8",marginBottom:3}}>
+                      {tipoCod}-{String(f.compNumero).padStart(4,"0")} · {f.fecha} · {f.razonSocial} · {fmt(f.total)}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {resultado.errores.length > 0 && (
+                <div style={{background:"#1a0a0a",border:"1px solid #7c3700",borderRadius:8,padding:"12px 16px"}}>
+                  <div style={{fontSize:13,fontWeight:700,color:"#f87171",marginBottom:8}}>✗ {resultado.errores.length} errores</div>
+                  {resultado.errores.map((e,i) => <div key={i} style={{fontSize:11,color:"#fb923c",marginBottom:3}}>• {e}</div>)}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div style={{padding:"12px 20px",borderTop:"1px solid #1e2235",display:"flex",gap:10,justifyContent:"flex-end"}}>
+          {!resultado ? (
+            <>
+              <button onClick={onClose} style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",padding:"8px 16px",borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:600}}>Cancelar</button>
+              <button onClick={enviar} disabled={enviando||aprobadas.length===0} style={{background:enviando?"#1e2235":"#22c55e",color:"#fff",border:"none",borderRadius:6,padding:"8px 22px",cursor:enviando?"not-allowed":"pointer",fontSize:13,fontWeight:700}}>
+                {enviando ? "Enviando..." : `🚀 Enviar ${aprobadas.length} facturas`}
+              </button>
+            </>
+          ) : (
+            <button onClick={onClose} style={{background:"#4f7cff",color:"#fff",border:"none",borderRadius:6,padding:"8px 22px",cursor:"pointer",fontSize:13,fontWeight:700}}>Cerrar</button>
+          )}
         </div>
       </div>
     </div>
@@ -955,6 +1229,7 @@ export default function App() {
   const [testAbierto,  setTestAbierto]  = useState(false);
   const [modalTerceros,   setModalTerceros]   = useState(false);
   const [modalCorreccion, setModalCorreccion] = useState(false);
+  const [modalEnviar,    setModalEnviar]    = useState(false);
   const [tercerosList,  setTercerosList]  = useState([]);
 
   // Cargar terceros al montar
@@ -1056,10 +1331,11 @@ export default function App() {
 
   return (
     <div style={{ fontFamily: "monospace", background: "#0f1117", color: "#e2e8f0", display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden" }}>
-      <style>{`*{box-sizing:border-box} ::-webkit-scrollbar{width:5px} ::-webkit-scrollbar-thumb{background:#3a3f5c;border-radius:3px} .dz{border:2px dashed #2d3352;border-radius:14px;padding:44px 24px;text-align:center;transition:all .2s;cursor:pointer} .dz:hover,.dz.over{border-color:#4f7cff;background:rgba(79,124,255,.05)} @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}`}</style>
+      <style>{`*{box-sizing:border-box} ::-webkit-scrollbar{width:10px;height:10px} ::-webkit-scrollbar-track{background:#0d101a;border-radius:6px} ::-webkit-scrollbar-thumb{background:#3a3f5c;border-radius:6px;border:2px solid #0d101a} ::-webkit-scrollbar-thumb:hover{background:#4f7cff} .dz{border:2px dashed #2d3352;border-radius:14px;padding:44px 24px;text-align:center;transition:all .2s;cursor:pointer} .dz:hover,.dz.over{border-color:#4f7cff;background:rgba(79,124,255,.05)} @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}`}</style>
 
       {modal && <ModalTratamiento archivos={modal.archivos} empresaActual={empresaActual} empresas={empresas} onEmpresa={setEmpresaActual} onConfirm={confirmarTratamiento} onCancel={() => setModal(null)} />}
       {modalExport && <ModalExport facturas={facturas} onClose={() => setModalExport(false)} pucCuentas={pucCuentas} />}
+      {modalEnviar && <ModalEnviar facturas={facturas} empresaActual={empresaActual} onClose={() => setModalEnviar(false)} onEnviado={(res) => { setModalEnviar(false); }} />}
       {modalCorreccion && <PanelCorreccion facturas={facturas} pucCuentas={pucCuentas} onUpdate={upd} onClose={() => setModalCorreccion(false)} />}
       {modalTerceros && (
         <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.92)",zIndex:3000,display:"flex",flexDirection:"column",padding:16}}>
@@ -1135,6 +1411,7 @@ export default function App() {
             }} style={{ background: "#4f7cff", color: "#fff", border: "none", borderRadius: 6, padding: "5px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>✓ Aprobar todas</button>
           )}
           {aprobadas.length > 0 && <button onClick={() => setModalExport(true)} style={{ background: "#22c55e", color: "#fff", border: "none", borderRadius: 6, padding: "5px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>⬇ Excel</button>}
+          {aprobadas.length > 0 && <button onClick={() => setModalEnviar(true)} style={{ background: "#8b5cf6", color: "#fff", border: "none", borderRadius: 6, padding: "5px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>🚀 ContaFlex</button>}
           {aprobadas.length > 0 && (
             <button onClick={() => { setFacturas(prev => prev.filter(f => !f.aprobado)); }} style={{ background: "transparent", border: "1px solid #166534", color: "#4ade80", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 600 }} title="Eliminar facturas aprobadas">🗑 Aprobadas</button>
           )}
