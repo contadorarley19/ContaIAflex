@@ -940,43 +940,28 @@ function PanelCorreccion({ facturas, pucCuentas, onUpdate, onClose }) {
                     </select>
                   </td>
                 </tr>
-                {verFacturas === c.codigo ? (
-                  <tr key={c.codigo+"_det"}>
-                    <td colSpan={5} style={{padding:"0 10px 10px",background:"#0a0d14"}}>
-                      <div style={{background:"#0d101a",border:"1px solid #2d3f6e",borderRadius:8,padding:"8px 12px"}}>
-                        <div style={{fontSize:10,color:"#60a5fa",fontWeight:600,marginBottom:6}}>
-                          Facturas que usan cuenta {c.codigo}:
-                        </div>
-                        {facturas.filter(f => f.asiento && (f.asiento||[]).some(r=>r.cuenta===c.codigo)).map(f=>(
-                          <div key={f.id} style={{display:"flex",gap:10,padding:"4px 0",borderBottom:"1px solid #1a1d27",fontSize:11,alignItems:"center"}}>
-                            <span style={{fontFamily:"monospace",color:"#94a3b8",minWidth:80}}>{f.prefijo||f.archivo?.slice(0,12)}</span>
-                            <span style={{color:"#cbd5e1",flex:1}}>{f.razonSocial||f.archivo}</span>
-                            <span style={{color:"#64748b"}}>{f.fecha}</span>
-                            <span style={{fontFamily:"monospace",color:"#4ade80",minWidth:90,textAlign:"right"}}>${(f.total||0).toLocaleString("es-CO")}</span>
-                            <span style={{
-                              background: f.aprobado?"#14532d":"#1e2a3a",
-                              color: f.aprobado?"#86efac":"#60a5fa",
-                              borderRadius:4,padding:"1px 7px",fontSize:10,fontWeight:600
-                            }}>{f.aprobado?"✓ Aprobada":"Pendiente"}</span>
-                            <button onClick={() => {
-                              onClose();
-                              setTimeout(() => {
-                                const el = document.getElementById(`factura-${f.id}`);
-                                if (el) { el.scrollIntoView({behavior:"smooth",block:"center"}); el.style.outline="2px solid #4f7cff"; setTimeout(()=>el.style.outline="",2000); }
-                              }, 200);
-                            }} style={{background:"#4f7cff",color:"#fff",border:"none",borderRadius:5,padding:"2px 9px",cursor:"pointer",fontSize:10,fontWeight:700,whiteSpace:"nowrap"}}>
-                              → Ver
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    </td>
-                  </tr>
-                ) : null}
               ))}
             </tbody>
           </table>
         </div>
+        {verFacturas && (
+          <div style={{background:"#0a0d14",border:"1px solid #2d3f6e",borderRadius:8,margin:"8px 0",padding:"10px 14px"}}>
+            <div style={{fontSize:11,color:"#60a5fa",fontWeight:600,marginBottom:8}}>
+              Facturas usando cuenta <span style={{fontFamily:"monospace"}}>{verFacturas}</span>:
+            </div>
+            {facturas.filter(f => f.asiento && (f.asiento||[]).some(r=>r.cuenta===verFacturas)).map(f=>(
+              <div key={f.id} style={{display:"flex",gap:10,padding:"5px 0",borderBottom:"1px solid #1a1d27",fontSize:11,alignItems:"center"}}>
+                <span style={{fontFamily:"monospace",color:"#94a3b8",minWidth:100}}>{f.prefijo||f.archivo?.slice(0,15)}</span>
+                <span style={{color:"#cbd5e1",flex:1}}>{f.razonSocial||f.archivo}</span>
+                <span style={{color:"#64748b",minWidth:80}}>{f.fecha}</span>
+                <span style={{fontFamily:"monospace",color:"#4ade80",minWidth:100,textAlign:"right"}}>${(f.total||0).toLocaleString("es-CO")}</span>
+                <span style={{background:f.aprobado?"#14532d":"#1e2a3a",color:f.aprobado?"#86efac":"#60a5fa",borderRadius:4,padding:"1px 7px",fontSize:10,fontWeight:600}}>{f.aprobado?"✓ Aprobada":"Pendiente"}</span>
+                <button onClick={() => { onClose(); setTimeout(() => { const el=document.getElementById("factura-"+f.id); if(el){el.scrollIntoView({behavior:"smooth",block:"center"});el.style.outline="2px solid #4f7cff";setTimeout(()=>el.style.outline="",2000);} },200); }}
+                  style={{background:"#4f7cff",color:"#fff",border:"none",borderRadius:5,padding:"2px 9px",cursor:"pointer",fontSize:10,fontWeight:700}}>→ Ver</button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
