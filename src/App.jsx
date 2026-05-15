@@ -229,14 +229,26 @@ async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function callClaude(body, intento = 0) {
   const res = await fetch(API_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  if (res.status === 429) {
-    if (intento >= 4) throw new Error("Límite API. Espera 1 minuto.");
-    await sleep((intento + 1) * 15000);
+  // 429 = rate limit, 529 = overloaded — ambos se reintentan con backoff
+  if (res.status === 429 || res.status === 529) {
+    if (intento >= 5) throw new Error("Claude sobrecargado. Espera 2 minutos e intenta de nuevo.");
+    const espera = (intento + 1) * 20000; // 20s, 40s, 60s, 80s, 100s
+    console.log(`[ContaIA] Claude ${res.status} — reintento ${intento+1} en ${espera/1000}s`);
+    await sleep(espera);
     return callClaude(body, intento + 1);
   }
   if (!res.ok) { const t = await res.text(); throw new Error(`HTTP ${res.status}: ${t}`); }
   const data = await res.json();
-  if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
+  if (data.error) {
+    // overloaded_error desde el body también se reintenta
+    if (data.error?.type === "overloaded_error" && intento < 5) {
+      const espera = (intento + 1) * 20000;
+      console.log(`[ContaIA] overloaded_error — reintento ${intento+1} en ${espera/1000}s`);
+      await sleep(espera);
+      return callClaude(body, intento + 1);
+    }
+    throw new Error(data.error.message || JSON.stringify(data.error));
+  }
   return data;
 }
 
@@ -750,7 +762,8 @@ export default function App() {
           setFacturas(prev => [...prev, { id: Date.now() + Math.random(), fechaCarga: new Date().toISOString(), archivo: archivo.name, error: e.message }]);
         }
       })(archivos[i]);
-      if (i < archivos.length - 1) await sleep(2000);
+      // Espera entre facturas para evitar overload en API Claude
+      if (i < archivos.length - 1) await sleep(archivos.length > 5 ? 5000 : 3000);
     }
     setProcesando(false);
   };
