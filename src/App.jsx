@@ -215,6 +215,75 @@ function detectarPersona(nitStr, razonSocial, schemeID, additionalAccountID) {
   return "natural";
 }
 
+// ─── TERCEROS ─────────────────────────────────────────────────────────────────
+function calcularDV(nit) {
+  const n = String(nit).trim().replace(/[^0-9]/g,"");
+  if (!n) return "";
+  const primos = [3,7,13,17,19,23,29,37,41,43,47];
+  let suma = 0;
+  n.split("").reverse().forEach((d,i) => { if(i<primos.length) suma += parseInt(d)*primos[i]; });
+  const r = suma % 11;
+  return String(r < 2 ? r : 11 - r);
+}
+
+function extraerTercero(datos, persona, esAutorretenedor, empresaId) {
+  const nit = (datos.nitProveedor||"").replace(/[^0-9]/g,"");
+  if (!nit) return null;
+  const tlc = (datos.taxLevelCode||"").toUpperCase();
+  let regimen = "Responsable IVA";
+  if (tlc.includes("O-48")||tlc.includes("R-99")) regimen = "No Responsable IVA";
+  if (tlc.includes("O-47")) regimen = "Régimen Simple";
+  if (tlc.includes("O-13")) regimen = "Gran Contribuyente";
+  // tipo_doc: 31=NIT (jurídica), 13=cédula (natural)
+  const tipo_doc = persona === "juridica" ? "31" : "13";
+  return {
+    empresa_id:           empresaId,
+    tipo_doc,
+    numero:               nit,
+    digito_verificacion:  calcularDV(nit),
+    razon_social:         datos.razonSocial||"",
+    nombre:               datos.razonSocial||"",
+    direccion:            datos.direccion||"",
+    telefono:             datos.telefono||"",
+    celular:              "",
+    email:                datos.email||"",
+    ciudad:               datos.ciudad||"",
+    departamento:         datos.departamento||"",
+    pais:                 "Colombia",
+    persona:              persona === "juridica" ? "Jurídica" : "Natural",
+    regimen,
+    es_cliente:           false,
+    es_proveedor:         true,
+    es_empleado:          false,
+    gran_contribuyente:   tlc.includes("O-13"),
+    autoretenedor:        esAutorretenedor,
+    agente_retencion_iva: tlc.includes("O-15"),
+    del_exterior:         false,
+  };
+}
+
+async function upsertTerceroSB(tercero) {
+  if (!tercero?.numero || !tercero?.empresa_id) return;
+  try {
+    // Verificar si existe por numero + empresa_id
+    const existe = await sbGet("terceros", { numero: tercero.numero, empresa_id: tercero.empresa_id });
+    if (existe && existe.length > 0) {
+      // Solo completar campos vacíos — no sobreescribir datos existentes
+      const actual = existe[0];
+      const update = { id: actual.id, numero: tercero.numero, empresa_id: tercero.empresa_id };
+      Object.keys(tercero).forEach(k => {
+        const val = tercero[k];
+        if (val !== undefined && val !== "" && val !== null && (!actual[k] || actual[k] === "")) {
+          update[k] = val;
+        }
+      });
+      await sbUpsert("terceros", update);
+    } else {
+      await sbUpsert("terceros", tercero);
+    }
+  } catch(e) { console.warn("upsertTercero error:", e.message); }
+}
+
 // ─── PARSE XML ────────────────────────────────────────────────────────────────
 // Campos clave según XMLs reales DIAN:
 // AdditionalAccountID: 1=jurídica, 2=natural
@@ -505,8 +574,31 @@ function FacturaCard({ f, idx, docNum, onUpdate, onAprender }) {
           <button onClick={() => setExpandido(e => !e)} style={{ background: "transparent", border: "1px solid #2d3352", color: "#94a3b8", borderRadius: 6, padding: "3px 10px", cursor: "pointer", fontSize: 11 }}>{expandido ? "▲" : "▼ Asiento"}</button>
           <button onClick={() => {
             if (!cuadra) { alert("El asiento está descuadrado. Revisa antes de aprobar."); return; }
-            if (!f.aprobado && onAprender) filas.filter(r => r.tipo === "debito" && r.cuenta && r.descripcion).forEach(r => onAprender(r.descripcion, r.cuenta, ""));
-            onUpdate(f.id, "asiento", filas); onUpdate(f.id, "aprobado", !f.aprobado);
+            onUpdate(f.id, "asiento", filas);
+            const nuevoEstado = !f.aprobado;
+            onUpdate(f.id, "aprobado", nuevoEstado);
+            // Guardar en Supabase dian_facturas al aprobar
+            if (nuevoEstado) {
+              const registro = {
+                empresa_nit:   f.empresa?.nit || "",
+                archivo:       f.archivo || "",
+                prefijo:       f.prefijo || "",
+                fecha:         f.fecha || "",
+                nit_proveedor: f.nitProveedor || "",
+                razon_social:  f.razonSocial || "",
+                subtotal:      f.subtotal || 0,
+                iva:           f.totalIva || 0,
+                total:         f.total || 0,
+                retefuente:    f.retefuente || 0,
+                retica:        f.retica || 0,
+                tratamiento:   f.tratamiento || "",
+                concepto:      f.ia?.concepto_general || "",
+                asiento:       filas,
+                aprobado:      true,
+                fecha_carga:   new Date().toISOString(),
+              };
+              sbUpsert("dian_facturas", registro).catch(() => {});
+            }
           }} style={{ background: f.aprobado ? "#14532d" : "#4f7cff", color: f.aprobado ? "#86efac" : "#fff", border: "none", borderRadius: 6, padding: "3px 14px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>{f.aprobado ? "✓ Aprobado" : "Aprobar"}</button>
         </div>
       </div>
@@ -648,8 +740,21 @@ function ModalTratamiento({ archivos, empresaActual, empresas, onEmpresa, onConf
 }
 
 // ─── MODAL EXPORT ─────────────────────────────────────────────────────────────
-function ModalExport({ facturas, onClose }) {
+function ModalExport({ facturas, onClose, pucCuentas = [] }) {
   const aprobadas = facturas.filter(f => f.aprobado && !f.error).sort((a, b) => (a.fecha || "").localeCompare(b.fecha || ""));
+
+  // Verificador pre-exportación
+  const errores = [];
+  aprobadas.forEach(f => {
+    (f.asiento||[]).forEach(r => {
+      if (!r.cuenta) { errores.push(`${f.razonSocial}: línea sin cuenta`); return; }
+      if (pucCuentas.length > 0 && !pucCuentas.find(c => c.codigo === r.cuenta))
+        errores.push(`${f.razonSocial}: cuenta ${r.cuenta} no existe en PUC`);
+    });
+    const deb = (f.asiento||[]).filter(r=>r.tipo==="debito").reduce((s,r)=>s+r.valor,0);
+    const cre = (f.asiento||[]).filter(r=>r.tipo==="credito").reduce((s,r)=>s+r.valor,0);
+    if (Math.abs(deb-cre)>1) errores.push(`${f.razonSocial}: asiento descuadrado ($${deb.toLocaleString("es-CO")} vs $${cre.toLocaleString("es-CO")})`);
+  });
   const [cfg, setCfg] = useState({ docNumInicio: "1", tpcCod: "CO", prfCod: "", docAux: "", ctoCod: "" });
   const set = (k, v) => setCfg(p => ({ ...p, [k]: v }));
   const fmt = n => `$${Number(n || 0).toLocaleString("es-CO")}`;
@@ -687,7 +792,18 @@ function ModalExport({ facturas, onClose }) {
             <div style={{ fontSize: 10, color: "#64748b", fontWeight: 600, marginBottom: 2 }}>📄 Por factura:</div>
             {aprobadas.map((f, i) => <button key={f.id} onClick={() => exportar(f)} style={{ background: "transparent", border: "1px solid #2d3352", color: "#94a3b8", borderRadius: 5, padding: "3px 9px", cursor: "pointer", fontSize: 10, textAlign: "left", whiteSpace: "nowrap" }}>⬇ {cfg.tpcCod}{(parseInt(cfg.docNumInicio) || 1) + i} · {(f.razonSocial || "").slice(0, 18)}</button>)}
           </div>
-          <button onClick={() => exportar()} disabled={aprobadas.length === 0} style={{ background: aprobadas.length ? "#4f7cff" : "#1e2235", color: aprobadas.length ? "#fff" : "#475569", border: "none", borderRadius: 8, padding: "10px 22px", cursor: aprobadas.length ? "pointer" : "not-allowed", fontSize: 13, fontWeight: 700 }}>⬇ Descargar TODAS ({aprobadas.length})</button>
+          <div style={{flex:1}}>
+            {errores.length > 0 && (
+              <div style={{background:"#1a0a0a",border:"1px solid #7c3700",borderRadius:8,padding:"10px 14px",maxHeight:120,overflowY:"auto"}}>
+                <div style={{fontSize:11,color:"#f87171",fontWeight:600,marginBottom:6}}>⚠ {errores.length} problema{errores.length>1?"s":""} detectado{errores.length>1?"s":""} — revisar antes de exportar:</div>
+                {errores.map((e,i)=><div key={i} style={{fontSize:10,color:"#fb923c",marginBottom:2}}>• {e}</div>)}
+              </div>
+            )}
+            {errores.length === 0 && aprobadas.length > 0 && (
+              <div style={{background:"#0a1a0a",border:"1px solid #166534",borderRadius:8,padding:"8px 14px",fontSize:11,color:"#4ade80"}}>✓ Todo verificado — {aprobadas.length} facturas listas para ContaFlex</div>
+            )}
+          </div>
+          <button onClick={() => { if(errores.length>0&&!confirm(`Hay ${errores.length} problema(s). ¿Exportar de todas formas?`)) return; exportar(); }} disabled={aprobadas.length === 0} style={{ background: aprobadas.length ? (errores.length>0?"#f59e0b":"#4f7cff") : "#1e2235", color: aprobadas.length ? "#fff" : "#475569", border: "none", borderRadius: 8, padding: "10px 22px", cursor: aprobadas.length ? "pointer" : "not-allowed", fontSize: 13, fontWeight: 700 }}>⬇ Exportar a ContaFlex ({aprobadas.length})</button>
         </div>
       </div>
     </div>
@@ -737,6 +853,96 @@ const FACTURAS_TEST = [
   { nombre: "Bayer S.A. (autorretenedor)", icono: "🔒", color: "#2d1a00", xml: `<?xml version="1.0" encoding="UTF-8"?><Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2" xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2"><cbc:ID>BAYER-FV-20260320</cbc:ID><cbc:IssueDate>2026-03-20</cbc:IssueDate><cac:AccountingSupplierParty><cac:Party><cac:PartyTaxScheme><cbc:CompanyID schemeID="31">860001942</cbc:CompanyID><cbc:RegistrationName>BAYER S.A.</cbc:RegistrationName></cac:PartyTaxScheme></cac:Party></cac:AccountingSupplierParty><cac:TaxTotal><cbc:TaxAmount currencyID="COP">285000</cbc:TaxAmount></cac:TaxTotal><cac:LegalMonetaryTotal><cbc:LineExtensionAmount currencyID="COP">1500000</cbc:LineExtensionAmount><cbc:PayableAmount currencyID="COP">1785000</cbc:PayableAmount></cac:LegalMonetaryTotal><cac:InvoiceLine><cbc:InvoicedQuantity>10</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="COP">1500000</cbc:LineExtensionAmount><cac:Item><cbc:Description>Productos químicos construcción</cbc:Description></cac:Item></cac:InvoiceLine></Invoice>` },
 ];
 
+// ─── PANEL CORRECCIÓN MASIVA ──────────────────────────────────────────────────
+function PanelCorreccion({ facturas, pucCuentas, onUpdate, onClose }) {
+  // Recopilar todas las cuentas usadas en el lote
+  const cuentasUsadas = {};
+  facturas.filter(f => !f.error && f.asiento).forEach(f => {
+    (f.asiento || []).forEach(r => {
+      if (!r.cuenta || r.id === "prov") return;
+      if (!cuentasUsadas[r.cuenta]) {
+        const enPuc = pucCuentas.find(c => c.codigo === r.cuenta);
+        cuentasUsadas[r.cuenta] = {
+          codigo: r.cuenta,
+          descripcion: r.descripcion,
+          count: 0,
+          enPuc: !!enPuc,
+          nombrePuc: enPuc?.nombre || "",
+          facturas: []
+        };
+      }
+      cuentasUsadas[r.cuenta].count++;
+      if (!cuentasUsadas[r.cuenta].facturas.includes(f.id))
+        cuentasUsadas[r.cuenta].facturas.push(f.id);
+    });
+  });
+
+  const lista = Object.values(cuentasUsadas).sort((a,b) => (a.enPuc===b.enPuc)?0:a.enPuc?1:-1);
+  const [correcciones, setCorrecciones] = useState({});
+
+  const aplicarCorrecciones = () => {
+    Object.entries(correcciones).forEach(([cuentaVieja, cuentaNueva]) => {
+      if (!cuentaNueva || cuentaNueva === cuentaVieja) return;
+      const enPuc = pucCuentas.find(c => c.codigo === cuentaNueva);
+      facturas.forEach(f => {
+        if (!f.asiento) return;
+        const nuevasFila = f.asiento.map(r =>
+          r.cuenta === cuentaVieja ? { ...r, cuenta: cuentaNueva, descripcion: enPuc?.nombre || r.descripcion, advertencia: !enPuc } : r
+        );
+        if (JSON.stringify(nuevasFila) !== JSON.stringify(f.asiento))
+          onUpdate(f.id, "asiento", nuevasFila);
+      });
+    });
+    onClose();
+  };
+
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.92)",zIndex:3000,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+      <div style={{background:"#161923",border:"1px solid #232840",borderRadius:16,maxWidth:800,width:"100%",maxHeight:"90vh",display:"flex",flexDirection:"column"}}>
+        <div style={{padding:"14px 20px",borderBottom:"1px solid #1e2235",display:"flex",alignItems:"center",gap:12}}>
+          <div style={{fontFamily:"sans-serif",fontWeight:700,fontSize:15,color:"#fff"}}>🔧 Corrección masiva de cuentas</div>
+          <span style={{fontSize:11,color:"#64748b"}}>{lista.length} cuentas usadas en este lote</span>
+          <div style={{marginLeft:"auto",display:"flex",gap:8}}>
+            <button onClick={aplicarCorrecciones} style={{background:"#4f7cff",color:"#fff",border:"none",borderRadius:6,padding:"6px 16px",cursor:"pointer",fontSize:12,fontWeight:700}}>✓ Aplicar correcciones</button>
+            <button onClick={onClose} style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",borderRadius:6,padding:"4px 10px",cursor:"pointer",fontSize:12}}>✕</button>
+          </div>
+        </div>
+        <div style={{flex:1,overflowY:"auto",padding:"12px 20px"}}>
+          <div style={{fontSize:11,color:"#64748b",marginBottom:10}}>
+            Las cuentas en <span style={{color:"#f87171"}}>rojo</span> no existen en el PUC. Corrígelas aquí y se actualizan en todas las facturas del lote.
+          </div>
+          <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+            <thead><tr style={{background:"#0d101a"}}>
+              {["Cuenta actual","Nombre PUC","Facturas","¿En PUC?","Corregir a"].map(h =>
+                <th key={h} style={{padding:"7px 10px",textAlign:"left",color:"#475569",fontSize:10,fontWeight:600,borderBottom:"1px solid #1e2235"}}>{h}</th>
+              )}
+            </tr></thead>
+            <tbody>
+              {lista.map(c => (
+                <tr key={c.codigo} style={{borderBottom:"1px solid #1a1d27",background:!c.enPuc?"#1a0a0a":"transparent"}}>
+                  <td style={{padding:"6px 10px",fontFamily:"monospace",color:c.enPuc?"#60a5fa":"#f87171",fontWeight:600}}>{c.codigo}</td>
+                  <td style={{padding:"6px 10px",color:"#94a3b8",maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{c.nombrePuc||c.descripcion}</td>
+                  <td style={{padding:"6px 10px",color:"#64748b",textAlign:"center"}}>{c.count}</td>
+                  <td style={{padding:"6px 10px",textAlign:"center"}}>{c.enPuc?<span style={{color:"#22c55e"}}>✓</span>:<span style={{color:"#f87171"}}>✗</span>}</td>
+                  <td style={{padding:"6px 10px"}}>
+                    <select onChange={e => setCorrecciones(p => ({...p,[c.codigo]:e.target.value}))}
+                      style={{background:"#0f1117",border:`1px solid ${!c.enPuc?"#f87171":"#2d3352"}`,color:"#e2e8f0",borderRadius:5,padding:"3px 7px",fontSize:11,width:"100%",cursor:"pointer",outline:"none"}}>
+                      <option value="">— sin cambio —</option>
+                      {pucCuentas.filter(p=>p.codigo.startsWith(c.codigo.slice(0,2))).map(p=>
+                        <option key={p.codigo} value={p.codigo}>{p.codigo} — {p.nombre}</option>
+                      )}
+                    </select>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── APP PRINCIPAL ────────────────────────────────────────────────────────────
 export default function App() {
   const [usuarioActual, setUsuarioActual] = useState(null);
@@ -747,6 +953,15 @@ export default function App() {
   const [progreso,     setProgreso]     = useState({ actual: 0, total: 0 });
   const [modalExport,  setModalExport]  = useState(false);
   const [testAbierto,  setTestAbierto]  = useState(false);
+  const [modalTerceros,   setModalTerceros]   = useState(false);
+  const [modalCorreccion, setModalCorreccion] = useState(false);
+  const [tercerosList,  setTercerosList]  = useState([]);
+
+  // Cargar terceros al montar
+  useEffect(() => {
+    if (!empresaActual?.id) return;
+    sbGet("terceros", { empresa_id: empresaActual.id }).then(t => setTercerosList(t || []));
+  }, [empresaActual?.id]);
 
   if (!usuarioActual) return <LoginScreen onLogin={setUsuarioActual} />;
 
@@ -765,6 +980,31 @@ export default function App() {
       await (async (archivo) => {
         try {
           let datos = {};
+
+          // Pre-validar duplicado antes de procesar
+          if (archivo.name.toLowerCase().endsWith(".xml")) {
+            const xmlText = await archivo.text();
+            const datosPreview = parseXML(xmlText) || {};
+            if (datosPreview.prefijo && datosPreview.nitProveedor) {
+              const nit_prev = (datosPreview.nitProveedor||"").replace(/[^0-9]/g,"");
+              const dup = await sbGet("dian_facturas", {
+                prefijo: datosPreview.prefijo,
+                nit_proveedor: nit_prev,
+                empresa_nit: empresaActual?.nit || ""
+              });
+              if (dup && dup.length > 0) {
+                const d = dup[0];
+                const diasAtras = Math.floor((Date.now() - new Date(d.fecha_carga)) / 86400000);
+                setFacturas(prev => [...prev, {
+                  id: Date.now()+Math.random(), fechaCarga: new Date().toISOString(),
+                  archivo: archivo.name,
+                  error: `⚠️ DUPLICADO — Esta factura ya fue contabilizada hace ${diasAtras} días (${d.fecha_carga?.slice(0,10)}). Proveedor: ${d.razon_social}. Total: $${(d.total||0).toLocaleString("es-CO")}.`
+                }]);
+                return;
+              }
+            }
+          }
+
           if (archivo.name.toLowerCase().endsWith(".pdf")) {
             const base64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.onerror = () => rej(new Error("No se pudo leer PDF")); r.readAsDataURL(archivo); });
             const d = await callClaude({ model: "claude-sonnet-4-5", max_tokens: 1500, messages: [{ role: "user", content: [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }, { type: "text", text: `Extrae datos de esta factura. SOLO JSON sin markdown: {"prefijo":"","fecha":"YYYY-MM-DD","nitProveedor":"","razonSocial":"","schemeID":"31","subtotal":0,"totalIva":0,"total":0,"items":[{"descripcion":"","cantidad":1,"valor":0}]}` }] }] });
@@ -785,6 +1025,10 @@ export default function App() {
 
           // REGLAS EN CÓDIGO: calcular retención exacta
           const rete = calcularRetencion(ia.tipo_retencion, persona, datos.fecha || "2026-01-01", datos.subtotal || 0, pucCuentas, esAutoRet);
+
+          // Guardar tercero en Supabase
+          const tercero = extraerTercero(datos, persona, esAutoRet, empresaActual?.id);
+          if (tercero) upsertTerceroSB(tercero).catch(()=>{});
 
           // CÓDIGO: construir asiento completo
           const asiento = construirAsiento(datos, ia, rete, pucCuentas, esAutoRet, tratIva);
@@ -815,7 +1059,49 @@ export default function App() {
       <style>{`*{box-sizing:border-box} ::-webkit-scrollbar{width:5px} ::-webkit-scrollbar-thumb{background:#3a3f5c;border-radius:3px} .dz{border:2px dashed #2d3352;border-radius:14px;padding:44px 24px;text-align:center;transition:all .2s;cursor:pointer} .dz:hover,.dz.over{border-color:#4f7cff;background:rgba(79,124,255,.05)} @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}`}</style>
 
       {modal && <ModalTratamiento archivos={modal.archivos} empresaActual={empresaActual} empresas={empresas} onEmpresa={setEmpresaActual} onConfirm={confirmarTratamiento} onCancel={() => setModal(null)} />}
-      {modalExport && <ModalExport facturas={facturas} onClose={() => setModalExport(false)} />}
+      {modalExport && <ModalExport facturas={facturas} onClose={() => setModalExport(false)} pucCuentas={pucCuentas} />}
+      {modalCorreccion && <PanelCorreccion facturas={facturas} pucCuentas={pucCuentas} onUpdate={upd} onClose={() => setModalCorreccion(false)} />}
+      {modalTerceros && (
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.92)",zIndex:3000,display:"flex",flexDirection:"column",padding:16}}>
+          <div style={{background:"#161923",border:"1px solid #232840",borderRadius:16,flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+            <div style={{padding:"14px 20px",borderBottom:"1px solid #1e2235",display:"flex",alignItems:"center",gap:12}}>
+              <div style={{fontFamily:"sans-serif",fontWeight:700,fontSize:15,color:"#fff"}}>👥 Terceros</div>
+              <span style={{fontSize:11,color:"#4ade80",background:"#0a1a0a",border:"1px solid #166534",borderRadius:5,padding:"2px 9px"}}>{tercerosList.length} proveedores</span>
+              <button onClick={() => {
+                const headers = ["tipo_doc","numero","digito_verificacion","razon_social","nombre","direccion","telefono","celular","email","ciudad","departamento","pais","persona","regimen","es_cliente","es_proveedor","es_empleado","gran_contribuyente","autoretenedor","agente_retencion_iva","del_exterior"];
+                const ws = XLSX.utils.aoa_to_sheet([headers,...tercerosList.map(t=>headers.map(h=>t[h]||""))]);
+                const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb,ws,"Terceros");
+                XLSX.writeFile(wb,`Terceros_${new Date().toISOString().slice(0,10)}.xlsx`);
+              }} style={{background:"#166534",color:"#fff",border:"none",borderRadius:6,padding:"5px 12px",cursor:"pointer",fontSize:11,fontWeight:600,marginLeft:"auto"}}>⬇ Excel</button>
+              <button onClick={() => setModalTerceros(false)} style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",borderRadius:6,padding:"4px 10px",cursor:"pointer",fontSize:12}}>✕</button>
+            </div>
+            <div style={{flex:1,overflowX:"auto",overflowY:"auto"}}>
+              {tercerosList.length === 0
+                ? <div style={{padding:40,textAlign:"center",color:"#475569"}}>Sin terceros aún — se agregan al procesar facturas</div>
+                : <table style={{borderCollapse:"collapse",fontSize:11,minWidth:"100%"}}>
+                    <thead><tr style={{background:"#0d101a",position:"sticky",top:0}}>
+                      {["NIT","DV","Razón Social","Teléfono","Email","Ciudad","Persona","Régimen","AutoRet"].map(h=><th key={h} style={{padding:"7px 10px",textAlign:"left",color:"#475569",fontSize:10,fontWeight:600,borderBottom:"1px solid #1e2235",whiteSpace:"nowrap"}}>{h}</th>)}
+                    </tr></thead>
+                    <tbody>
+                      {tercerosList.map((t,i)=>(
+                        <tr key={t.numero} style={{borderBottom:"1px solid #1a1d27",background:i%2===0?"transparent":"#0a0d14"}}>
+                          <td style={{padding:"5px 10px",fontFamily:"monospace",color:"#60a5fa"}}>{t.numero}</td>
+                          <td style={{padding:"5px 10px",color:"#64748b"}}>{t.digito_verificacion}</td>
+                          <td style={{padding:"5px 10px",color:"#e2e8f0",maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.razon_social}</td>
+                          <td style={{padding:"5px 10px",color:"#94a3b8"}}>{t.telefono}</td>
+                          <td style={{padding:"5px 10px",color:"#94a3b8",maxWidth:140,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.email}</td>
+                          <td style={{padding:"5px 10px",color:"#94a3b8"}}>{t.ciudad}</td>
+                          <td style={{padding:"5px 10px",color:t.persona==="Jurídica"?"#60a5fa":"#fb923c"}}>{t.persona}</td>
+                          <td style={{padding:"5px 10px",color:"#64748b",maxWidth:120,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{t.regimen}</td>
+                          <td style={{padding:"5px 10px",textAlign:"center"}}>{t.autoretenedor?<span style={{color:"#fb923c",fontWeight:700}}>🔒</span>:<span style={{color:"#2d3352"}}>—</span>}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* NAVBAR */}
       <div style={{ background: "#0d101a", borderBottom: "1px solid #1e2235", padding: "10px 20px", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", flexShrink: 0 }}>
@@ -839,6 +1125,9 @@ export default function App() {
           {!cargando && empresaActual && <div style={{ background: "#0a1a0a", border: "1px solid #166534", borderRadius: 5, padding: "3px 9px", fontSize: 10, color: "#4ade80", fontWeight: 600 }}>✓ {pucCuentas.length} cuentas PUC</div>}
           <div style={{ fontSize: 10, color: "#64748b" }}>👤 {usuarioActual?.usuario || usuarioActual?.nombre}</div>
           {facturas.length > 0 && <div style={{ fontSize: 11, color: "#64748b" }}><span style={{ color: "#4f7cff", fontWeight: 700 }}>{facturas.filter(f => !f.error).length}</span>/<span style={{ color: "#22c55e", fontWeight: 700 }}>{aprobadas.length}</span></div>}
+          {facturas.filter(f => !f.error && f.asiento).length > 0 && (
+            <button onClick={() => setModalCorreccion(true)} style={{ background: "transparent", border: "1px solid #f59e0b", color: "#f59e0b", borderRadius: 6, padding: "5px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>🔧 Cuentas</button>
+          )}
           {facturas.filter(f => !f.aprobado && !f.error && f.asiento).length > 0 && (
             <button onClick={() => {
               const cuadradas = facturas.filter(f => !f.aprobado && !f.error && f.asiento);
@@ -850,6 +1139,7 @@ export default function App() {
             <button onClick={() => { setFacturas(prev => prev.filter(f => !f.aprobado)); }} style={{ background: "transparent", border: "1px solid #166534", color: "#4ade80", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontWeight: 600 }} title="Eliminar facturas aprobadas">🗑 Aprobadas</button>
           )}
           {facturas.length > 0 && <button onClick={limpiar} style={{ background: "transparent", border: "1px solid #2d3352", color: "#64748b", borderRadius: 6, padding: "4px 8px", cursor: "pointer", fontSize: 11 }} title="Limpiar todo">🗑 Todo</button>}
+          <button onClick={() => setModalTerceros(true)} style={{ background: "transparent", border: "1px solid #2d3352", color: "#60a5fa", borderRadius: 6, padding: "4px 9px", cursor: "pointer", fontSize: 11, fontWeight: 600 }} title="Ver terceros">👥</button>
           <button onClick={() => { setUsuarioActual(null); limpiar(); }} style={{ background: "transparent", border: "1px solid #3b1f1f", color: "#f87171", borderRadius: 6, padding: "4px 9px", cursor: "pointer", fontSize: 11, fontWeight: 600 }}>🚪</button>
         </div>
       </div>
