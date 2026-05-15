@@ -1026,6 +1026,18 @@ async function enviarAContaFlex(facturas, empresaActual, tipoCod = "CO") {
       const filaRete = (f.asiento||[]).find(r => r.id === "rete");
       const filaIva  = (f.asiento||[]).find(r => r.id === "iva");
 
+      // Construir detalles en formato JSON de ContaFlex
+      const detallesJson = (f.asiento||[]).map(r => ({
+        id:            generarId(),
+        cuenta:        r.cuenta || "",
+        detalle:       r.descripcion || "",
+        documento:     f.prefijo || "",
+        tercero_nit:   nit,
+        tercero_nombre: f.razonSocial || "",
+        debito:        r.tipo === "debito" ? r.valor : 0,
+        credito:       r.tipo === "credito" ? r.valor : 0,
+      }));
+
       const comprobante = {
         id:               generarId(),
         empresa_id:       empresaActual.id,
@@ -1049,7 +1061,7 @@ async function enviarAContaFlex(facturas, empresaActual, tipoCod = "CO") {
         base_reteica:     reteica > 0 ? subtotal : 0,
         tarifa_reteica:   0, valor_reteica: reteica, cuenta_reteica: "",
         neto_pagar:       neto,
-        detalles:         "",
+        detalles:         JSON.stringify(detallesJson),
       };
 
       // Insertar comprobante — usamos el id que generamos nosotros
@@ -1075,21 +1087,8 @@ async function enviarAContaFlex(facturas, empresaActual, tipoCod = "CO") {
         credito:        r.tipo === "credito" ? r.valor : 0,
       }));
 
-      console.log(`[ContaFlex] Insertando ${detalles.length} detalles para comprobante ${compId}:`, detalles);
-      const rDet = await fetch(`${SB_URL}/rest/v1/comprobante_detalles`, {
-        method: "POST",
-        headers: { apikey: SB_KEY, Authorization: `Bearer ${SB_KEY}`, "Content-Type": "application/json", Prefer: "return=representation" },
-        body: JSON.stringify(detalles)
-      });
-
-      const detText = await rDet.text();
-      console.log(`[ContaFlex] Respuesta detalles (${rDet.status}):`, detText);
-
-      if (!rDet.ok) {
-        errores.push(`${f.razonSocial} (detalles): ${detText}`);
-      } else {
-        resultados.push({ ...f, compNumero: ultimoNum });
-      }
+      // Los detalles ya van dentro del JSON en comprobante.detalles
+      resultados.push({ ...f, compNumero: ultimoNum });
     }
   }
 
