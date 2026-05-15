@@ -940,7 +940,7 @@ function PanelCorreccion({ facturas, pucCuentas, onUpdate, onClose }) {
                     </select>
                   </td>
                 </tr>
-                {verFacturas === c.codigo && (
+                {verFacturas === c.codigo ? (
                   <tr key={c.codigo+"_det"}>
                     <td colSpan={5} style={{padding:"0 10px 10px",background:"#0a0d14"}}>
                       <div style={{background:"#0d101a",border:"1px solid #2d3f6e",borderRadius:8,padding:"8px 12px"}}>
@@ -972,7 +972,7 @@ function PanelCorreccion({ facturas, pucCuentas, onUpdate, onClose }) {
                       </div>
                     </td>
                   </tr>
-                )}
+                ) : null}
               ))}
             </tbody>
           </table>
