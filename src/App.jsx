@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import * as XLSX from "xlsx";
 
 // ─── CONSTANTES ───────────────────────────────────────────────────────────────
@@ -1219,7 +1219,7 @@ function ModalEnviar({ facturas, empresaActual, onClose, onEnviado }) {
 
 // ─── PANEL AUDITORÍA POR CUENTA ────────────────────────────────────────────────
 function PanelAuditoriaCuentas({ facturas, onClose }) {
-  const [cuentaSel, setCuentaSel] = React.useState(null);
+  const [cuentaSel, setCuentaSel] = useState(null);
   const fmt = n => "$" + Number(n||0).toLocaleString("es-CO");
 
   // Construir mapa de cuentas con sus facturas
@@ -1436,26 +1436,20 @@ export default function App() {
       setAprobadasAcumRaw(p => { const n=p.filter(f=>f.id!==id); localStorage.setItem("cf_ia_aprobadas",JSON.stringify(n)); return n; });
       return;
     }
-    setFacturas(prev => prev.map(f => {
-      if (f.id !== id) return f;
-      const updated = { ...f, [k]: v };
-      if (k === "aprobado" && v === true) {
-        setAprobadasAcumRaw(prev2 => {
+    setFacturas(prev => prev.map(f => f.id === id ? { ...f, [k]: v } : f));
+    if (k === "aprobado") {
+      setAprobadasAcumRaw(prev2 => {
+        let nuevas;
+        if (v === true) {
           const sin = prev2.filter(x => x.id !== id);
-          const nuevas = [...sin, updated];
-          localStorage.setItem("cf_ia_aprobadas", JSON.stringify(nuevas));
-          return nuevas;
-        });
-      }
-      if (k === "aprobado" && !v) {
-        setAprobadasAcumRaw(prev2 => {
-          const sin = prev2.filter(x => x.id !== id);
-          localStorage.setItem("cf_ia_aprobadas", JSON.stringify(sin));
-          return sin;
-        });
-      }
-      return updated;
-    }));
+          nuevas = [...sin, { ...facturas.find(f=>f.id===id)||{}, [k]: v }];
+        } else {
+          nuevas = prev2.filter(x => x.id !== id);
+        }
+        localStorage.setItem("cf_ia_aprobadas", JSON.stringify(nuevas));
+        return nuevas;
+      });
+    }
   };;
   const aprobadas = facturas.filter(f => f.aprobado && !f.error).sort((a, b) => (a.fecha || "").localeCompare(b.fecha || ""));
   const fmt = n => `$${Number(n || 0).toLocaleString("es-CO")}`;
