@@ -426,11 +426,34 @@ function construirAsiento(datos, ia, rete, pucCuentas, esAutorretenedor, tratIva
   const filas = [];
   let totalDeb = 0;
 
-  // 1. Líneas de costo/gasto/inventario
+  // Función: si la cuenta no es auxiliar (no está en pucCuentas), buscar el auxiliar más cercano
+  const resolverAuxiliar = (cod) => {
+    if (!cod) return { cod: "", advertencia: true };
+    const codStr = String(cod);
+    // Buscar exacto
+    const exacto = pucCuentas.find(p => String(p.codigo) === codStr);
+    if (exacto) return { cod: codStr, advertencia: false };
+    // Buscar auxiliar que empiece con el código dado (subcuenta → auxiliar)
+    const hijo = pucCuentas.find(p => String(p.codigo).startsWith(codStr) && String(p.codigo).length > codStr.length);
+    if (hijo) return { cod: String(hijo.codigo), advertencia: false, reemplazado: codStr };
+    // Buscar auxiliar cuyo prefijo coincida con el código (código más largo → buscar padre)
+    for (let len = codStr.length - 1; len >= 4; len--) {
+      const prefijo = codStr.slice(0, len);
+      const padre = pucCuentas.find(p => String(p.codigo).startsWith(prefijo));
+      if (padre) return { cod: String(padre.codigo), advertencia: false, reemplazado: codStr };
+    }
+    return { cod: codStr, advertencia: true };
+  };
+
+  // 1. Líneas de costo/gasto/inventario — filtrar solo cuentas válidas (1x,5x,6x)
   (ia.lineas_contables || []).forEach((l, i) => {
-    const val = Math.round(l.valor || 0);
+    const val = Math.round(Math.abs(l.valor || 0));  // siempre positivo
     if (!val) return;
-    filas.push({ id: `lc${i}`, tipo: "debito", cuenta: l.cuenta_codigo || "", descripcion: l.descripcion || ia.concepto_general, valor: val, editable: true, eliminable: true, advertencia: !l.cuenta_codigo });
+    const cod = String(l.cuenta_codigo || "");
+    // Ignorar cuentas de proveedor (22x), retención (23x), IVA por pagar (24x) — las maneja el código
+    if (cod.startsWith("22") || cod.startsWith("23") || cod.startsWith("24")) return;
+    const aux = resolverAuxiliar(cod);
+    filas.push({ id: `lc${i}`, tipo: "debito", cuenta: aux.cod, descripcion: l.descripcion || ia.concepto_general, valor: val, editable: true, eliminable: true, advertencia: aux.advertencia });
     totalDeb += val;
   });
 
@@ -442,14 +465,16 @@ function construirAsiento(datos, ia, rete, pucCuentas, esAutorretenedor, tratIva
 
   // 2. IVA
   if ((datos.totalIva || 0) > 0 && ia.cuenta_iva_codigo) {
-    filas.push({ id: "iva", tipo: "debito", cuenta: ia.cuenta_iva_codigo, descripcion: ia.cuenta_iva_nombre || "IVA", valor: datos.totalIva, editable: true, eliminable: true, advertencia: false });
+    const auxIva = resolverAuxiliar(ia.cuenta_iva_codigo);
+    filas.push({ id: "iva", tipo: "debito", cuenta: auxIva.cod, descripcion: ia.cuenta_iva_nombre || "IVA", valor: datos.totalIva, editable: true, eliminable: true, advertencia: auxIva.advertencia });
     totalDeb += datos.totalIva;
   }
 
   // 3. Retención (calculada por CÓDIGO, no por IA)
   let totalCre = 0;
   if (!esAutorretenedor && rete.valor > 0 && rete.cuenta) {
-    filas.push({ id: "rete", tipo: "credito", cuenta: rete.cuenta.codigo, descripcion: `ReteFuente ${rete.pct}% — ${ia.tipo_retencion}`, valor: rete.valor, editable: true, eliminable: true, advertencia: false });
+    const auxRete = resolverAuxiliar(rete.cuenta.codigo);
+    filas.push({ id: "rete", tipo: "credito", cuenta: auxRete.cod, descripcion: `ReteFuente ${rete.pct}% — ${ia.tipo_retencion}`, valor: rete.valor, editable: true, eliminable: true, advertencia: auxRete.advertencia });
     totalCre += rete.valor;
   }
 
@@ -1606,9 +1631,17 @@ export default function App() {
           // REGLAS EN CÓDIGO: calcular retención exacta
           const rete = calcularRetencion(ia.tipo_retencion, persona, datos.fecha || "2026-01-01", datos.subtotal || 0, pucCuentas, esAutoRet);
 
-          // Guardar tercero en Supabase
-          const tercero = extraerTercero(datos, persona, esAutoRet, empresaActual?.id);
-          if (tercero) upsertTerceroSB(tercero).catch(()=>{});
+          // Guardar tercero en Supabase — sin bloquear el procesamiento
+          try {
+            const tercero = extraerTercero(datos, persona, esAutoRet, empresaActual?.id);
+            if (tercero) {
+              // Timeout de 5s para no bloquear
+              Promise.race([
+                upsertTerceroSB(tercero),
+                new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000))
+              ]).catch(() => {}); // ignorar errores de terceros silenciosamente
+            }
+          } catch(e) {}
 
           // CÓDIGO: construir asiento completo
           const asiento = construirAsiento(datos, ia, rete, pucCuentas, esAutoRet, tratIva);
