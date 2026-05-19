@@ -1,17 +1,18 @@
 [build]
-  command = ""
-  publish = "public"
+  command = "npm run build"
+  publish = "build"
+
 [functions]
   directory = "netlify/functions"
   node_bundler = "esbuild"
+
 [[redirects]]
   from = "/api/claude"
   to = "/.netlify/functions/claude"
   status = 200
   force = true
+
 [[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200
-[dev]
-  framework = "#static"
