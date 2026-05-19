@@ -631,6 +631,19 @@ function FacturaCard({ f, idx, docNum, onUpdate, onAprender }) {
         </div>
       </div>
 
+      {/* Aviso re-procesar si no tiene datos */}
+      {(!f.razonSocial || !f.asiento || f.asiento.length === 0) && (
+        <div style={{ margin: "8px 16px", background: "rgba(251,191,36,.08)", border: "1px solid rgba(251,191,36,.2)", borderRadius: 8, padding: "10px 14px", display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 12, color: "#fbbf24" }}>⚠ Factura sin procesar — el asiento contable está vacío</span>
+          <button onClick={() => {
+            // Limpiar error y marcar para re-proceso eliminando de facturas y re-cargando el archivo
+            onUpdate(f.id, "_reprocesar", true);
+          }} style={{ background: "rgba(251,191,36,.15)", color: "#fbbf24", border: "1px solid rgba(251,191,36,.3)", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 600, flexShrink: 0 }}>
+            🔄 Eliminar y volver a subir el XML
+          </button>
+        </div>
+      )}
+
       {/* Info factura */}
       <div style={{ padding: "11px 16px", display: "flex", gap: 14, alignItems: "flex-start", flexWrap: "wrap" }}>
         <div style={{ flex: 2, minWidth: 220 }}>
@@ -1591,7 +1604,7 @@ export default function App() {
   };
 
   const upd = (id, k, v) => {
-    if (k === "_eliminar") {
+    if (k === "_eliminar" || k === "_reprocesar") {
       setFacturas(p => p.filter(f => f.id !== id));
       setAprobadasAcumRaw(p => { const n=p.filter(f=>f.id!==id); localStorage.setItem("cf_ia_aprobadas",JSON.stringify(n)); return n; });
       return;
