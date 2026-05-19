@@ -1536,7 +1536,6 @@ export default function App() {
                     <span style={{ fontSize:11,fontWeight:700,color:"#f59e0b",textTransform:"uppercase",letterSpacing:.5 }}>Por aprobar · {facturas.filter(f=>!f.aprobado||f.error).length}</span>
                   </div>
                   {facturas.filter(f => !f.aprobado || f.error).map((f, i) => (
-                    <div key={f.id} style={{ mar                  {facturas.filter(f => !f.aprobado || f.error).map((f, i) => (
                     <FacturaCard key={f.id} f={f} idx={facturas.indexOf(f)} onUpdate={upd} docNum={null} onAprender={() => {}} />
                   ))}
                 </div>
