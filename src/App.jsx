@@ -372,7 +372,12 @@ async function callClaude(body, intento = 0) {
 async function analizarConIA(datos, tratamiento, tratIva, pucCuentas) {
   if (!pucCuentas || pucCuentas.length === 0) throw new Error("PUC vacío — configura el PUC de la empresa en Supabase.");
 
+  // Incluir TODAS las cuentas auxiliares de la empresa
   const pucTexto = pucCuentas
+    .map(c => `${c.codigo}\t${c.nombre}`)
+    .join("\n");
+  // Cuentas de gasto/inventario filtradas para orientar la IA
+  const pucGastos = pucCuentas
     .filter(c => {
       const cod = c.codigo || "";
       if (tratamiento === "inventario") return cod.startsWith("1");
@@ -396,7 +401,11 @@ ITEMS: ${itemsTexto}
 SUBTOTAL: $${(datos.subtotal||0).toLocaleString("es-CO")} | IVA: $${(datos.totalIva||0).toLocaleString("es-CO")}
 TRATAMIENTO: ${tratamiento === "inventario" ? "INVENTARIO-cuentas 1x" : "GASTO-cuentas 6x/5x"}
 
-PUC (SOLO estas cuentas):
+⚠ OBLIGATORIO: USA SOLO ESTAS CUENTAS DE LA EMPRESA. PROHIBIDO inventar códigos.
+CUENTAS GASTO/COSTO SUGERIDAS:
+${pucGastos || pucTexto || "(vacío)"}
+
+TODAS LAS CUENTAS DISPONIBLES (retenciones, proveedores, IVA, etc.):
 ${pucTexto || "(vacío)"}
 
 IVA (SOLO estas):
@@ -560,9 +569,9 @@ function FacturaCard({ f, idx, docNum, onUpdate, onAprender }) {
       </div>
       <div style={{ display: "flex", gap: 8 }}>
         {f.error.toString().includes("DUPLICADO") && (
-          <button onClick={() => onUpdate(f.id, "error", null)}
+          <button onClick={() => { onUpdate(f.id, "error", null); onUpdate(f.id, "aprobado", false); }}
             style={{ background: "rgba(251,191,36,.15)", color: "#fbbf24", border: "1px solid rgba(251,191,36,.3)", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 600 }}>
-            ⚡ Ignorar duplicado y procesar igualmente
+            ⚡ Ignorar duplicado — re-aprobar manualmente
           </button>
         )}
         <button onClick={() => onUpdate(f.id, "_eliminar", true)}
