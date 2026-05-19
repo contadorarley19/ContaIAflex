@@ -1029,15 +1029,19 @@ async function enviarAContaFlex(facturas, empresaActual, tipoCod = "CO") {
       const filaIva  = (f.asiento||[]).find(r => r.id === "iva");
 
       // Construir detalles en formato JSON de ContaFlex
+      // Número de factura del proveedor para el campo Documento
+      const numFactura = f.prefijo || f.numeroFactura || f.nroDocumento || "";
       const detallesJson = (f.asiento||[]).map(r => ({
         id:            generarId(),
         cuenta:        r.cuenta || "",
         detalle:       r.descripcion || "",
-        documento:     f.prefijo || "",
+        documento:     numFactura,  // ← número de factura proveedor
         tercero_nit:   nit,
         tercero_nombre: f.razonSocial || "",
         debito:        r.tipo === "debito" ? r.valor : 0,
         credito:       r.tipo === "credito" ? r.valor : 0,
+        base_gravable: r.id === "rete" ? (f.subtotal || 0) : 0,
+        tarifa:        r.id === "rete" ? (f.rete?.pct || 0) : 0,
       }));
 
       const comprobante = {
@@ -1212,17 +1216,119 @@ function ModalEnviar({ facturas, empresaActual, onClose, onEnviado }) {
 }
 
 // ─── APP PRINCIPAL ────────────────────────────────────────────────────────────
+
+// ─── PANEL AUDITORÍA POR CUENTA ────────────────────────────────────────────────
+function PanelAuditoriaCuentas({ facturas, onClose }) {
+  const [cuentaSel, setCuentaSel] = React.useState(null);
+  const fmt = n => "$" + Number(n||0).toLocaleString("es-CO");
+
+  // Construir mapa de cuentas con sus facturas
+  const cuentaMap = {};
+  facturas.filter(f => f.asiento).forEach(f => {
+    (f.asiento||[]).forEach(r => {
+      if (!r.cuenta) return;
+      if (!cuentaMap[r.cuenta]) cuentaMap[r.cuenta] = {
+        cuenta: r.cuenta,
+        nombre: r.descripcion || r.cuenta,
+        debito: 0, credito: 0,
+        facturas: []
+      };
+      cuentaMap[r.cuenta].debito  += r.tipo === "debito"  ? (r.valor||0) : 0;
+      cuentaMap[r.cuenta].credito += r.tipo === "credito" ? (r.valor||0) : 0;
+      if (!cuentaMap[r.cuenta].facturas.find(x => x.id === f.id))
+        cuentaMap[r.cuenta].facturas.push(f);
+    });
+  });
+  const cuentas = Object.values(cuentaMap).sort((a,b) => a.cuenta.localeCompare(b.cuenta));
+
+  return (
+    <div style={{ position:"fixed",inset:0,background:"rgba(0,0,0,.92)",zIndex:3000,display:"flex",alignItems:"center",justifyContent:"center",padding:16 }}>
+      <div style={{ background:"#161923",border:"1px solid #232840",borderRadius:16,maxWidth:900,width:"100%",maxHeight:"90vh",display:"flex",flexDirection:"column" }}>
+        <div style={{ padding:"14px 20px",borderBottom:"1px solid #1e2235",display:"flex",alignItems:"center",gap:12 }}>
+          <div style={{ fontWeight:700,fontSize:15,color:"#fff" }}>🔍 Auditoría por cuenta</div>
+          <span style={{ fontSize:11,color:"#64748b" }}>{cuentas.length} cuentas usadas</span>
+          <button onClick={onClose} style={{ marginLeft:"auto",background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",borderRadius:6,padding:"4px 12px",cursor:"pointer",fontFamily:"inherit" }}>✕ Cerrar</button>
+        </div>
+        <div style={{ flex:1,overflowY:"auto",display:"grid",gridTemplateColumns:cuentaSel?"1fr 1fr":"1fr",gap:0 }}>
+          {/* Tabla de cuentas */}
+          <div style={{ overflowY:"auto" }}>
+            <table style={{ width:"100%",borderCollapse:"collapse",fontSize:12 }}>
+              <thead>
+                <tr style={{ background:"#0d101a",position:"sticky",top:0 }}>
+                  {["Cuenta","Nombre","Débito","Crédito","Facturas"].map(h=>(
+                    <th key={h} style={{ padding:"8px 12px",textAlign:h==="Débito"||h==="Crédito"||h==="Facturas"?"right":"left",fontSize:10,fontWeight:700,color:"#475569",textTransform:"uppercase",letterSpacing:.5,borderBottom:"1px solid #1e2235" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {cuentas.map((ct,i) => (
+                  <tr key={ct.cuenta} onClick={()=>setCuentaSel(cuentaSel===ct.cuenta?null:ct.cuenta)}
+                    style={{ borderBottom:"1px solid rgba(30,34,58,.5)",cursor:"pointer",
+                      background:cuentaSel===ct.cuenta?"rgba(79,142,247,.1)":i%2===0?"transparent":"rgba(255,255,255,.01)" }}>
+                    <td style={{ padding:"8px 12px",fontFamily:"monospace",color:"#e8b84b",fontWeight:600 }}>{ct.cuenta}</td>
+                    <td style={{ padding:"8px 12px",color:"#94a3b8",maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}>{ct.nombre}</td>
+                    <td style={{ padding:"8px 12px",textAlign:"right",fontFamily:"monospace",color:"#4ade80" }}>{ct.debito>0?fmt(ct.debito):"—"}</td>
+                    <td style={{ padding:"8px 12px",textAlign:"right",fontFamily:"monospace",color:"#f87171" }}>{ct.credito>0?fmt(ct.credito):"—"}</td>
+                    <td style={{ padding:"8px 12px",textAlign:"right",color:"#64748b" }}>{ct.facturas.length}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {/* Detalle facturas de la cuenta seleccionada */}
+          {cuentaSel && cuentaMap[cuentaSel] && (
+            <div style={{ borderLeft:"1px solid #1e2235",overflowY:"auto" }}>
+              <div style={{ padding:"12px 16px",borderBottom:"1px solid #1e2235",background:"#0d101a",position:"sticky",top:0 }}>
+                <div style={{ fontSize:12,fontWeight:700,color:"#4f8ef7" }}>Cuenta {cuentaSel}</div>
+                <div style={{ fontSize:11,color:"#64748b" }}>{cuentaMap[cuentaSel].nombre}</div>
+              </div>
+              {cuentaMap[cuentaSel].facturas.map((f,i) => {
+                const linea = (f.asiento||[]).find(r=>r.cuenta===cuentaSel);
+                return (
+                  <div key={f.id} style={{ padding:"12px 16px",borderBottom:"1px solid rgba(30,34,58,.5)" }}>
+                    <div style={{ display:"flex",justifyContent:"space-between",marginBottom:4 }}>
+                      <span style={{ fontWeight:600,color:"#e2e8f0",fontSize:12 }}>{f.razonSocial||f.nitProveedor}</span>
+                      <span style={{ fontFamily:"monospace",color:"#e8b84b",fontSize:11 }}>{f.prefijo||"—"}</span>
+                    </div>
+                    <div style={{ fontSize:11,color:"#64748b",marginBottom:4 }}>
+                      NIT {f.nitProveedor} · {f.fecha}
+                    </div>
+                    {linea && (
+                      <div style={{ display:"flex",gap:12 }}>
+                        {linea.tipo==="debito"  && <span style={{ color:"#4ade80",fontFamily:"monospace",fontSize:11 }}>Déb: {fmt(linea.valor)}</span>}
+                        {linea.tipo==="credito" && <span style={{ color:"#f87171",fontFamily:"monospace",fontSize:11 }}>Cré: {fmt(linea.valor)}</span>}
+                        <span style={{ color:"#475569",fontSize:11 }}>{linea.descripcion}</span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [usuarioActual, setUsuarioActual] = useState(null);
   const { empresas, empresaActual, setEmpresaActual, pucCuentas, autorretenedores, cargando } = useSupabase();
   const { facturas, setFacturas, limpiar } = useFacturas();
   const [modal,        setModal]        = useState(null);
   const [procesando,   setProcesando]   = useState(false);
-  const [tabVista,     setTabVista]     = useState("pendientes");
-  const [subidas,      setSubidasRaw]   = useState(() => {
+  const [tabVista,        setTabVista]        = useState("porAprobar");
+  const [modalAuditoria,  setModalAuditoria]  = useState(false);
+  // Subidas — historial persistente de facturas enviadas a ContaFlex
+  const [subidas, setSubidasRaw] = useState(() => {
     try { return JSON.parse(localStorage.getItem("cf_ia_subidas") || "[]"); } catch(e) { return []; }
   });
   const guardarSubidas = (arr) => { setSubidasRaw(arr); localStorage.setItem("cf_ia_subidas", JSON.stringify(arr)); };
+  // Aprobadas acumuladas — persisten aunque se suban nuevas facturas
+  const [aprobadasAcum, setAprobadasAcumRaw] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("cf_ia_aprobadas") || "[]"); } catch(e) { return []; }
+  });
+  const guardarAprobadasAcum = (arr) => { setAprobadasAcumRaw(arr); localStorage.setItem("cf_ia_aprobadas", JSON.stringify(arr)); };
   const [progreso,     setProgreso]     = useState({ actual: 0, total: 0 });
   const [modalExport,  setModalExport]  = useState(false);
   const [testAbierto,  setTestAbierto]  = useState(false);
@@ -1325,9 +1431,32 @@ export default function App() {
   };
 
   const upd = (id, k, v) => {
-    if (k === "_eliminar") { setFacturas(p => p.filter(f => f.id !== id)); return; }
-    setFacturas(p => p.map(f => f.id === id ? { ...f, [k]: v } : f));
-  };
+    if (k === "_eliminar") {
+      setFacturas(p => p.filter(f => f.id !== id));
+      setAprobadasAcumRaw(p => { const n=p.filter(f=>f.id!==id); localStorage.setItem("cf_ia_aprobadas",JSON.stringify(n)); return n; });
+      return;
+    }
+    setFacturas(prev => prev.map(f => {
+      if (f.id !== id) return f;
+      const updated = { ...f, [k]: v };
+      if (k === "aprobado" && v === true) {
+        setAprobadasAcumRaw(prev2 => {
+          const sin = prev2.filter(x => x.id !== id);
+          const nuevas = [...sin, updated];
+          localStorage.setItem("cf_ia_aprobadas", JSON.stringify(nuevas));
+          return nuevas;
+        });
+      }
+      if (k === "aprobado" && !v) {
+        setAprobadasAcumRaw(prev2 => {
+          const sin = prev2.filter(x => x.id !== id);
+          localStorage.setItem("cf_ia_aprobadas", JSON.stringify(sin));
+          return sin;
+        });
+      }
+      return updated;
+    }));
+  };;
   const aprobadas = facturas.filter(f => f.aprobado && !f.error).sort((a, b) => (a.fecha || "").localeCompare(b.fecha || ""));
   const fmt = n => `$${Number(n || 0).toLocaleString("es-CO")}`;
 
@@ -1336,6 +1465,10 @@ export default function App() {
       <style>{`*{box-sizing:border-box} ::-webkit-scrollbar{width:10px;height:10px} ::-webkit-scrollbar-track{background:#0d101a;border-radius:6px} ::-webkit-scrollbar-thumb{background:#3a3f5c;border-radius:6px;border:2px solid #0d101a} ::-webkit-scrollbar-thumb:hover{background:#4f7cff} .dz{border:2px dashed #2d3352;border-radius:14px;padding:44px 24px;text-align:center;transition:all .2s;cursor:pointer} .dz:hover,.dz.over{border-color:#4f7cff;background:rgba(79,124,255,.05)} @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}`}</style>
 
       {modal && <ModalTratamiento archivos={modal.archivos} empresaActual={empresaActual} empresas={empresas} onEmpresa={setEmpresaActual} onConfirm={confirmarTratamiento} onCancel={() => setModal(null)} />}
+      {modalAuditoria && <PanelAuditoriaCuentas
+        facturas={[...facturas, ...aprobadasAcum, ...subidas]}
+        onClose={() => setModalAuditoria(false)}
+      />}
       {modalExport && <ModalExport facturas={facturas} onClose={() => setModalExport(false)} pucCuentas={pucCuentas} />}
       {modalEnviar && <ModalEnviar facturas={facturas} empresaActual={empresaActual} onClose={() => setModalEnviar(false)} onEnviado={(res) => {
           setModalEnviar(false);
@@ -1345,6 +1478,7 @@ export default function App() {
             .map(f => ({ ...f, fechaSubida: new Date().toISOString().slice(0,10) }));
           guardarSubidas([...subidas, ...enviadas]);
           // Quitar enviadas de facturas pendientes
+          guardarAprobadasAcum([]);
           setFacturas(prev => prev.filter(f => !f.aprobado || f.error));
           res.forEach(f => upd(f.id, "enviado", true));
         }} />}
@@ -1422,6 +1556,11 @@ export default function App() {
               cuadradas.forEach(f => { upd(f.id, "aprobado", true); });
             }} style={{ background: "#4f7cff", color: "#fff", border: "none", borderRadius: 6, padding: "5px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>✓ Aprobar todas</button>
           )}
+          {(aprobadas.length > 0 || aprobadasAcum.length > 0) && (
+            <button onClick={() => setModalAuditoria(true)} style={{ background:"transparent",border:"1px solid #4f8ef7",color:"#4f8ef7",borderRadius:6,padding:"5px 12px",cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:"inherit" }}>
+              🔍 Auditoría cuentas
+            </button>
+          )}
           {aprobadas.length > 0 && <button onClick={() => setModalExport(true)} style={{ background: "#22c55e", color: "#fff", border: "none", borderRadius: 6, padding: "5px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>⬇ Excel</button>}
           {aprobadas.length > 0 && <button onClick={() => setModalEnviar(true)} style={{ background: "#8b5cf6", color: "#fff", border: "none", borderRadius: 6, padding: "5px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>🚀 ContaFlex</button>}
           {aprobadas.length > 0 && (
@@ -1444,7 +1583,11 @@ export default function App() {
           {/* TABS */}
           {(facturas.length > 0 || subidas.length > 0) && (
             <div style={{ display: "flex", gap: 0, borderBottom: "1px solid #1e2235", marginBottom: 12 }}>
-              {[["pendientes", "📋 Pendientes", facturas.length], ["subidas", "✓ Subidas", subidas.length]].map(([id, lbl, cnt]) => (
+              {[
+                ["porAprobar", "📋 Por aprobar", facturas.filter(f=>!f.aprobado||f.error).length],
+                ["aprobadas",  "✓ Aprobadas",   aprobadasAcum.length],
+                ["subidas",    "↗ Enviadas",     subidas.length],
+              ].map(([id, lbl, cnt]) => (
                 <button key={id} onClick={() => setTabVista(id)}
                   style={{ padding: "8px 16px", border: "none", background: "transparent", cursor: "pointer",
                     fontSize: 12, fontWeight: 500, fontFamily: "monospace",
@@ -1522,30 +1665,34 @@ export default function App() {
           </div>
 
           {/* Lista facturas */}
-          {tabVista === "pendientes" && facturas.length > 0 && (
+          {tabVista === "porAprobar" && (
             <div style={{ marginTop: 22, display: "flex", flexDirection: "column", gap: 16 }}>
               <div style={{ fontFamily: "sans-serif", fontWeight: 700, fontSize: 14, color: "#fff" }}>
                 Facturas <span style={{ color: "#4f7cff" }}>({facturas.length})</span>
                 {empresaActual && <span style={{ fontSize: 11, color: "#64748b", fontWeight: 400, marginLeft: 8 }}>{empresaActual.nombre}</span>}
               </div>
 
-              {/* Por aprobar */}
-              {facturas.filter(f => !f.aprobado || f.error).length > 0 && (
-                <div>
-                  <div style={{ display:"flex",alignItems:"center",gap:8,marginBottom:8,paddingBottom:6,borderBottom:"1px solid #1e2235" }}>
-                    <div style={{ width:8,height:8,borderRadius:"50%",background:"#f59e0b" }}></div>
-                    <span style={{ fontSize:11,fontWeight:700,color:"#f59e0b",textTransform:"uppercase",letterSpacing:.5 }}>
-                      Por aprobar · {facturas.filter(f=>!f.aprobado||f.error).length}
-                    </span>
-                  </div>
-                  {facturas.filter(f => !f.aprobado || f.error).map((f, i) => (
-                    <FacturaCard key={f.id} f={f} idx={facturas.indexOf(f)} onUpdate={upd} docNum={null} onAprender={() => {}} />
-                  ))}
+              {/* Solo por aprobar en esta vista */}
+              {facturas.filter(f => !f.aprobado || f.error).length === 0 && (
+                <div style={{ textAlign:"center",padding:40,color:"#475569",fontSize:13 }}>
+                  ✓ Sin facturas pendientes de aprobación
                 </div>
               )}
+              {facturas.filter(f => !f.aprobado || f.error).map((f, i) => (
+                <FacturaCard key={f.id} f={f} idx={facturas.indexOf(f)} onUpdate={upd} docNum={null} onAprender={() => {}} />
+              ))}
+            </div>
+          )}
 
-              {/* Aprobadas — listas para subir */}
-              {aprobadas.length > 0 && (
+          {/* APROBADAS — listas para subir */}
+          {tabVista === "aprobadas" && (
+            <div style={{ display:"flex",flexDirection:"column",gap:12 }}>
+              {aprobadasAcum.length === 0 && (
+                <div style={{ textAlign:"center",padding:40,color:"#475569",fontSize:13 }}>
+                  Sin facturas aprobadas — apruebe facturas en la pestaña "Por aprobar"
+                </div>
+              )}
+              {aprobadasAcum.length > 0 && (
                 <div>
                   <div style={{ display:"flex",alignItems:"center",gap:8,marginBottom:8,paddingBottom:6,borderBottom:"1px solid #166534" }}>
                     <div style={{ width:8,height:8,borderRadius:"50%",background:"#4ade80" }}></div>
@@ -1553,20 +1700,20 @@ export default function App() {
                       Aprobadas · listas para subir · {aprobadas.length}
                     </span>
                   </div>
-                  {aprobadas.map((f, i) => (
-                    <FacturaCard key={f.id} f={f} idx={facturas.indexOf(f)} onUpdate={upd} docNum={String(i+1)} onAprender={() => {}} />
+                  {aprobadasAcum.map((f, i) => (
+                    <FacturaCard key={f.id} f={f} idx={i} onUpdate={upd} docNum={String(i+1)} onAprender={() => {}} />
                   ))}
 
                   {/* Resumen */}
                   <div style={{ background:"#0f1a2e",border:"1px solid #1e3a5f",borderRadius:10,padding:"16px 20px",marginTop:12 }}>
                     <div style={{ fontFamily:"sans-serif",fontWeight:700,fontSize:13,color:"#60a5fa",marginBottom:10 }}>
-                      {aprobadas.length} facturas aprobadas
+                      {aprobadasAcum.length} facturas aprobadas — listas para enviar
                     </div>
                     <div style={{ display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:14 }}>
-                      {[["Total facturado", fmt(aprobadas.reduce((s,f)=>s+(f.total||0),0)),"#4ade80"],
-                        ["Retenciones", fmt(aprobadas.reduce((s,f)=>s+(f.retefuente||0),0)),"#f59e0b"],
-                        ["IVA total", fmt(aprobadas.reduce((s,f)=>s+(f.totalIva||0),0)),"#818cf8"],
-                        ["Neto a pagar", fmt(aprobadas.reduce((s,f)=>s+((f.total||0)-(f.retefuente||0)),0)),"#34d399"],
+                      {[["Total facturado", fmt(aprobadasAcum.reduce((s,f)=>s+(f.total||0),0)),"#4ade80"],
+                        ["Retenciones", fmt(aprobadasAcum.reduce((s,f)=>s+(f.retefuente||0),0)),"#f59e0b"],
+                        ["IVA total", fmt(aprobadasAcum.reduce((s,f)=>s+(f.totalIva||0),0)),"#818cf8"],
+                        ["Neto a pagar", fmt(aprobadasAcum.reduce((s,f)=>s+((f.total||0)-(f.retefuente||0)),0)),"#34d399"],
                       ].map(([l,v,c]) => (
                         <div key={l} style={{ background:"#0d1520",borderRadius:7,padding:"10px 13px" }}>
                           <div style={{ fontSize:9,color:"#64748b",textTransform:"uppercase",letterSpacing:.8,marginBottom:4 }}>{l}</div>
@@ -1574,14 +1721,16 @@ export default function App() {
                         </div>
                       ))}
                     </div>
-                    <div style={{ display:"flex",justifyContent:"flex-end" }}>
+                    <div style={{ display:"flex",justifyContent:"flex-end",gap:10 }}>
                       <button onClick={()=>setModalExport(true)} style={{ background:"#22c55e",color:"#fff",border:"none",borderRadius:7,padding:"9px 22px",cursor:"pointer",fontSize:13,fontWeight:700,fontFamily:"inherit" }}>
-                        ⬇ Exportar comprobante Excel
+                        ⬇ Exportar Excel
+                      </button>
+                      <button onClick={()=>setModalEnviar(true)} style={{ background:"#8b5cf6",color:"#fff",border:"none",borderRadius:7,padding:"9px 22px",cursor:"pointer",fontSize:13,fontWeight:700,fontFamily:"inherit" }}>
+                        ↗ Enviar a ContaFlex
                       </button>
                     </div>
                   </div>
-                </div>
-              )}
+                )}
             </div>
           )}
         </div>
