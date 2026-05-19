@@ -561,6 +561,18 @@ function FacturaCard({ f, idx, docNum, onUpdate, onAprender }) {
   const neto     = filas.find(r => r.id === "prov")?.valor || 0;
   const hayAdv   = filas.some(r => r.advertencia);
 
+  // Mostrar placeholder mientras procesa
+  if (f.procesando) return (
+    <div style={{ background: "#161923", border: "1px solid #1e3a5f", borderRadius: 10, padding: "14px 16px", display: "flex", alignItems: "center", gap: 12 }}>
+      <div style={{ fontSize: 22, animation: "spin 1s linear infinite", display: "inline-block" }}>⚙️</div>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: 12, color: "#60a5fa", fontWeight: 600 }}>Procesando con IA...</div>
+        <div style={{ fontSize: 11, color: "#475569", marginTop: 2, fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.archivo}</div>
+      </div>
+      <span style={{ fontSize: 10, color: "#475569", background: "#0d101a", border: "1px solid #1e2235", borderRadius: 20, padding: "2px 8px" }}>En cola</span>
+    </div>
+  );
+
   if (f.error) return (
     <div style={{ background: "#1a0a0a", border: "1px solid #3b1f1f", borderRadius: 10, padding: "12px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1525,11 +1537,26 @@ export default function App() {
 
   const confirmarTratamiento = async (tratamiento, tratIva) => {
     const { archivos } = modal;
-    setModal(null); setProcesando(true);
+    setModal(null);
+    // Agregar placeholders inmediatamente para mostrar en la lista
+    const placeholders = archivos.map((archivo, i) => ({
+      id: Date.now() + i + Math.random(),
+      fechaCarga: new Date().toISOString(),
+      archivo: archivo.name,
+      tratamiento, tratIva,
+      procesando: true,
+      aprobado: false,
+      asiento: null,
+    }));
+    setFacturas(prev => [...prev, ...placeholders]);
+    setProcesando(true);
     setProgreso({ actual: 0, total: archivos.length });
 
+    // Procesar en lotes de 3 con pausa entre lotes
+    const LOTE = 3;
     for (let i = 0; i < archivos.length; i++) {
       setProgreso({ actual: i + 1, total: archivos.length });
+      const placeholderId = placeholders[i].id;
       await (async (archivo) => {
         try {
           let datos = {};
@@ -1586,19 +1613,32 @@ export default function App() {
           // CÓDIGO: construir asiento completo
           const asiento = construirAsiento(datos, ia, rete, pucCuentas, esAutoRet, tratIva);
 
-          setFacturas(prev => [...prev, {
-            id: Date.now() + Math.random(), fechaCarga: new Date().toISOString(),
-            archivo: archivo.name, tratamiento, tratIva, empresa: empresaActual,
+          // Actualizar el placeholder con los datos reales
+          setFacturas(prev => prev.map(f => f.id === placeholderId ? {
+            ...f,
+            procesando: false,
+            empresa: empresaActual,
             ...datos, nit, persona, ia, rete, reteInfo: rete,
             retefuente: rete.valor, esAutorretenedor: esAutoRet,
             aprobado: false, asiento,
-          }]);
+          } : f));
         } catch (e) {
-          setFacturas(prev => [...prev, { id: Date.now() + Math.random(), fechaCarga: new Date().toISOString(), archivo: archivo.name, error: e.message }]);
+          // Actualizar placeholder con error
+          setFacturas(prev => prev.map(f => f.id === placeholderId ? {
+            ...f, procesando: false,
+            error: e.message || "Error procesando"
+          } : f));
+          // Actualizar placeholder con error si no se actualizó
+          setFacturas(prev => prev.map(f => f.id === placeholderId && f.procesando ? {
+            ...f, procesando: false, error: e.message || "Error procesando"
+          } : f));
         }
       })(archivos[i]);
-      // Espera entre facturas — 3s siempre para evitar rate limit
-      if (i < archivos.length - 1) await sleep(3000);
+      // Pausa entre facturas: 2s normal, 5s cada 3 facturas para evitar rate limit
+      if (i < archivos.length - 1) {
+        const pausa = (i + 1) % LOTE === 0 ? 5000 : 2000;
+        await sleep(pausa);
+      }
     }
     setProcesando(false);
   };
@@ -1623,7 +1663,7 @@ export default function App() {
         return nuevas;
       });
     }
-  };;
+  };
   const aprobadas = facturas.filter(f => f.aprobado && !f.error).sort((a, b) => (a.fecha || "").localeCompare(b.fecha || ""));
   const fmt = n => `$${Number(n || 0).toLocaleString("es-CO")}`;
 
