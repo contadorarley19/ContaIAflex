@@ -523,7 +523,7 @@ ${instrPUC}
 ${instrTratamiento}
 
 RETENCIONES — usa solo cuentas del PUC con sus tarifas parametrizadas:
-${retencionesPrompt}
+\${retencionesPrompt}
 
 IVA:
 ${tratIva==="descontable"
@@ -1105,13 +1105,13 @@ const getDocNum = (id) => { const idx=aprobadasOrdenadas.findIndex(f=>f.id===id)
     <div style={{fontFamily:"'IBM Plex Mono','Courier New',monospace",background:"#0f1117",minHeight:"100vh",color:"#e2e8f0"}}>
       {modal&&<ModalTratamiento archivos={modal.archivos} onConfirm={confirmarTratamiento} onCancel={()=>setModal(null)}/>}
       {modalExport&&<ModalExport facturas={facturas} onClose={()=>setModalExport(false)} onEnviar={(aprobadas)=>{
-        const enviadas = enviarAContaFlex(aprobadas);
-        if(enviadas){
-          const nuevasSubidas=[...subidas,...aprobadas.map(f=>({...f,fechaSubida:new Date().toISOString().slice(0,10)}))];
-          guardarSubidas(nuevasSubidas);
-          setFacturas(p=>p.filter(f=>!f.aprobado||f.error));
-        }
-      }}/>}
+  const enviadas = enviarAContaFlex(aprobadas);
+  if(enviadas){
+    const nuevasSubidas=[...subidas,...aprobadas.map(f=>({...f,fechaSubida:new Date().toISOString().slice(0,10)}))];
+    guardarSubidas(nuevasSubidas);
+    setFacturas(p=>p.filter(f=>!f.aprobado||f.error));
+  }
+}}/>}
       <div style={{background:"#0d101a",borderBottom:"1px solid #1e2235",padding:"12px 24px",display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
         <div style={{display:"flex",alignItems:"center",gap:11}}>
           <div style={{width:32,height:32,background:"linear-gradient(135deg,#4f7cff,#8b5cf6)",borderRadius:7,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>⚡</div>
@@ -1189,6 +1189,7 @@ const getDocNum = (id) => { const idx=aprobadasOrdenadas.findIndex(f=>f.id===id)
         )}
 
         {tabVista==='pendientes'&&(
+        <React.Fragment>
         <div className="dz"
           onDragOver={e=>{e.preventDefault();e.currentTarget.classList.add("over")}}
           onDragLeave={e=>e.currentTarget.classList.remove("over")}
@@ -1341,7 +1342,8 @@ const getDocNum = (id) => { const idx=aprobadasOrdenadas.findIndex(f=>f.id===id)
             )}
           </div>
         )}
-        )} {/* fin tab pendientes */}
+        </React.Fragment>
+        )}{/* fin tabVista===pendientes */}
       </div>
     </div>
   );
