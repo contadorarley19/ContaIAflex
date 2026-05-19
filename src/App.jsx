@@ -1741,6 +1741,15 @@ export default function App() {
           )}
           {facturas.length > 0 && <button onClick={limpiar} style={{ background: "transparent", border: "1px solid #2d3352", color: "#64748b", borderRadius: 6, padding: "4px 8px", cursor: "pointer", fontSize: 11 }} title="Limpiar todo">🗑 Todo</button>}
           <button onClick={() => setModalTerceros(true)} style={{ background: "transparent", border: "1px solid #2d3352", color: "#60a5fa", borderRadius: 6, padding: "4px 9px", cursor: "pointer", fontSize: 11, fontWeight: 600 }} title="Ver terceros">👥</button>
+          <button onClick={() => {
+            if (window.confirm("¿Limpiar TODAS las facturas (pendientes, aprobadas e historial)?")) {
+              limpiar();
+              guardarSubidas([]);
+              guardarAprobadasAcum([]);
+            }
+          }} style={{ background: "transparent", border: "1px solid #7c2020", color: "#f87171", borderRadius: 6, padding: "4px 10px", cursor: "pointer", fontSize: 11, fontFamily: "monospace" }}>
+            🗑 Limpiar todo
+          </button>
           <button onClick={() => { setUsuarioActual(null); limpiar(); }} style={{ background: "transparent", border: "1px solid #3b1f1f", color: "#f87171", borderRadius: 6, padding: "4px 9px", cursor: "pointer", fontSize: 11, fontWeight: 600 }}>🚪</button>
         </div>
       </div>
