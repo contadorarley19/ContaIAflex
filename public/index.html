@@ -681,7 +681,7 @@ function CeldaEditable({ valor, onChange, tipo="text", style={} }) {
   );
 }
 
-function ModalExport({ facturas, onClose, onEnviar }) {
+function ModalExport({ facturas, onClose }) {
   const aprobadas = facturas.filter(f => f.aprobado && !f.error).sort((a, b) => (a.fecha || "").localeCompare(b.fecha || ""));
   const [cfg, setCfg] = useState({ docNumInicio: "1", tpcCod: "CO", prfCod: "", docAux: "", ctoCod: "" });
   const set = (k, v) => setCfg(p => ({ ...p, [k]: v }));
@@ -758,7 +758,30 @@ function ModalExport({ facturas, onClose, onEnviar }) {
             style={{background:aprobadas.length?"#4f7cff":"#1e2235",color:aprobadas.length?"#fff":"#475569",border:"none",borderRadius:8,padding:"10px 22px",cursor:aprobadas.length?"pointer":"not-allowed",fontSize:13,fontWeight:700,fontFamily:"inherit"}}>
             ⬇ Descargar TODAS ({aprobadas.length})
           </button>
-          <button onClick={()=>{ onEnviar(aprobadas); onClose(); }} disabled={aprobadas.length===0}
+          <button onClick={()=>{
+            const enviadas = enviarAContaFlex(aprobadas);
+            if(enviadas) {
+              // Mover aprobadas a subidas
+              const nuevasSubidas = [...subidas, ...aprobadas.map(f=>({...f,fechaSubida:new Date().toISOString().slice(0,10)}))];
+              guardarSubidas(nuevasSubidas);
+              // Quitar aprobadas de facturas pendientes
+              setFacturas(p=>p.filter(f=>!f.aprobado||f.error));
+            }
+          }} disabled={aprobadas.length===0}
+            style={{background:aprobadas.length?"#e8b84b":"#1e2235",color:aprobadas.length?"#0f1f3d":"#475569",border:"none",borderRadius:8,padding:"10px 22px",cursor:aprobadas.length?"pointer":"not-allowed",fontSize:13,fontWeight:700,fontFamily:"inherit",marginLeft:8}}>
+            ↗ Enviar a ContaFlex ({aprobadas.length})
+          </button>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginLeft:16,paddingLeft:16,borderLeft:"1px solid #232840"}}>
+            <div style={{fontSize:12,color:tablaBases.length?"#4ade80":"#f87171",fontWeight:600}}>
+              {tablaBases.length?"✓ "+tablaBases.length+" reglas de retención":"⚠ Sin bases de retención"}
+            </div>
+            <input ref={inputBasesRef} type="file" accept=".xlsx,.xls" onChange={cargarExcelBases} style={{display:"none"}}/>
+            <button onClick={()=>inputBasesRef.current?.click()}
+              style={{background:"#1e2235",color:"#94a3b8",border:"1px solid #2d3352",borderRadius:8,padding:"6px 14px",cursor:"pointer",fontSize:12,fontWeight:600}}>
+              📋 {tablaBases.length?"Actualizar bases":"Cargar bases retención"}
+            </button>
+          </div>
+          <button onClick={()=>enviarAContaFlex(aprobadas)} disabled={aprobadas.length===0}
             style={{background:aprobadas.length?"#e8b84b":"#1e2235",color:aprobadas.length?"#0f1f3d":"#475569",border:"none",borderRadius:8,padding:"10px 22px",cursor:aprobadas.length?"pointer":"not-allowed",fontSize:13,fontWeight:700,fontFamily:"inherit",marginLeft:8}}>
             ↗ Enviar a ContaFlex ({aprobadas.length})
           </button>
@@ -1104,14 +1127,7 @@ const getDocNum = (id) => { const idx=aprobadasOrdenadas.findIndex(f=>f.id===id)
   return (
     <div style={{fontFamily:"'IBM Plex Mono','Courier New',monospace",background:"#0f1117",minHeight:"100vh",color:"#e2e8f0"}}>
       {modal&&<ModalTratamiento archivos={modal.archivos} onConfirm={confirmarTratamiento} onCancel={()=>setModal(null)}/>}
-      {modalExport&&<ModalExport facturas={facturas} onClose={()=>setModalExport(false)} onEnviar={(aprobadas)=>{
-  const enviadas = enviarAContaFlex(aprobadas);
-  if(enviadas){
-    const nuevasSubidas=[...subidas,...aprobadas.map(f=>({...f,fechaSubida:new Date().toISOString().slice(0,10)}))];
-    guardarSubidas(nuevasSubidas);
-    setFacturas(p=>p.filter(f=>!f.aprobado||f.error));
-  }
-}}/>}
+      {modalExport&&<ModalExport facturas={facturas} onClose={()=>setModalExport(false)}/>}
       <div style={{background:"#0d101a",borderBottom:"1px solid #1e2235",padding:"12px 24px",display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
         <div style={{display:"flex",alignItems:"center",gap:11}}>
           <div style={{width:32,height:32,background:"linear-gradient(135deg,#4f7cff,#8b5cf6)",borderRadius:7,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>⚡</div>
@@ -1189,7 +1205,6 @@ const getDocNum = (id) => { const idx=aprobadasOrdenadas.findIndex(f=>f.id===id)
         )}
 
         {tabVista==='pendientes'&&(
-        <React.Fragment>
         <div className="dz"
           onDragOver={e=>{e.preventDefault();e.currentTarget.classList.add("over")}}
           onDragLeave={e=>e.currentTarget.classList.remove("over")}
@@ -1342,8 +1357,7 @@ const getDocNum = (id) => { const idx=aprobadasOrdenadas.findIndex(f=>f.id===id)
             )}
           </div>
         )}
-        </React.Fragment>
-        )}{/* fin tabVista===pendientes */}
+        )} {/* fin tab pendientes */}
       </div>
     </div>
   );
