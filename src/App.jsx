@@ -1,3 +1,4 @@
+// v2.1
 import { useState, useEffect, useRef } from "react";
 import * as XLSX from "xlsx";
 import ModalDescargaDIAN from "./ModalDescargaDIAN";
@@ -158,7 +159,7 @@ function extraerTercero(datos, persona, esAutorretenedor, empresaId) {
   if (tlc.includes("O-47")) regimen = "Régimen Simple";
   if (tlc.includes("O-13")) regimen = "Gran Contribuyente";
   const tipo_doc = persona === "juridica" ? "31" : "13";
-  return { empresa_id: empresaId, tipo_doc, numero: nit, digito_verificacion: calcularDV(nit), razon_social: datos.razonSocial||"", nombre: datos.razonSocial||"", direccion: datos.direccion||"", telefono: datos.telefono||"", celular: "", email: datos.email||"", ciudad: datos.ciudad||"", departamento: datos.departamento||"", pais: "Colombia", persona: persona === "juridica" ? "Jurídica" : "Natural", regimen, es_cliente: false, es_proveedor: true, es_empleado: false, gran_contribuyente: tlc.includes("O-13"), autoretenedor: esAutorretenedor, agente_retencion_iva: tlc.includes("O-15"), del_exterior: false };
+  return { id: Math.random().toString(36).slice(2) + Date.now().toString(36), empresa_id: empresaId, tipo_doc, numero: nit, digito_verificacion: calcularDV(nit), razon_social: datos.razonSocial||"", nombre: datos.razonSocial||"", direccion: datos.direccion||"", telefono: datos.telefono||"", celular: "", email: datos.email||"", ciudad: datos.ciudad||"", departamento: datos.departamento||"", pais: "Colombia", persona: persona === "juridica" ? "Jurídica" : "Natural", regimen, es_cliente: false, es_proveedor: true, es_empleado: false, gran_contribuyente: tlc.includes("O-13"), autoretenedor: esAutorretenedor, agente_retencion_iva: tlc.includes("O-15"), del_exterior: false };
 }
 
 async function upsertTerceroSB(tercero) {
@@ -648,9 +649,9 @@ export default function App() {
           try { const tercero = extraerTercero(datos, persona, esAutoRet, empresaActual?.id); if (tercero) { Promise.race([upsertTerceroSB(tercero), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000))]).catch(() => {}); } } catch(e) {}
           const asiento = construirAsiento(datos, ia, rete, pucCuentas, esAutoRet, tratIva);
           setFacturas(prev => prev.map(f => f.id === placeholderId ? { ...f, procesando: false, empresa: empresaActual, ...datos, xmlOriginal: datos._xmlOriginal || null, nit, persona, ia, rete, reteInfo: rete, retefuente: rete.valor, esAutorretenedor: esAutoRet, aprobado: false, asiento } : f));
-        } catch (e) { setFacturas(prev => prev.map(f => f.id === placeholderId ? { ...f, procesando: false, error: e.message || "Error procesando", xmlOriginal: datos?._xmlOriginal || null } : f)); }
+        } catch (e) { setFacturas(prev => prev.map(f => f.id === placeholderId ? { ...f, procesando: false, error: e.message || "Error procesando", xmlOriginal: (typeof datos !== "undefined" && datos?._xmlOriginal) || null } : f)); }
       })(archivos[i]);
-      if (i < archivos.length - 1) { const pausa = (i + 1) % LOTE === 0 ? 5000 : 2000; await sleep(pausa); }
+      if (i < archivos.length - 1) { const pausa = (i + 1) % LOTE === 0 ? 8000 : 3000; await sleep(pausa); }
     }
     setProcesando(false);
   };
