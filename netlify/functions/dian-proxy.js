@@ -388,6 +388,29 @@ exports.handler = async (event) => {
       };
     }
 
+
+    // ── DOWNLOAD PDF SINGLE ───────────────────────────────────────────────────
+    if (action === "download_pdf_single") {
+      const { cookies, trackId } = body;
+      if (!cookies || !trackId) {
+        return { statusCode: 400, headers, body: JSON.stringify({ error: "cookies y trackId requeridos" }) };
+      }
+      const result = await dianDownloadBinary("/Document/DownloadZipFiles?trackId=" + trackId, cookies);
+      if (result.statusCode !== 200) {
+        return { statusCode: result.statusCode, headers, body: JSON.stringify({ error: "HTTP " + result.statusCode }) };
+      }
+      const isZip = result.rawBuffer[0] === 0x50 && result.rawBuffer[1] === 0x4b;
+      if (!isZip) {
+        return { statusCode: 422, headers, body: JSON.stringify({ error: "No es ZIP - sesion expirada" }) };
+      }
+      const pdfData = extractPdfFromZip(result.rawBuffer);
+      if (!pdfData) {
+        return { statusCode: 422, headers, body: JSON.stringify({ error: "Sin PDF en ZIP" }) };
+      }
+      const pdfB64 = pdfData.toString("base64");
+      return { statusCode: 200, headers, body: JSON.stringify({ ok: true, pdf: pdfB64, trackId }) };
+    }
+
     return { statusCode: 400, headers, body: JSON.stringify({ error: "Accion desconocida: " + action }) };
 
   } catch(err) {
