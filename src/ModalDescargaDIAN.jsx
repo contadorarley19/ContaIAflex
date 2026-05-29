@@ -26,12 +26,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { useState, useEffect, useRef } from "react";
-// JSZip se carga dinámicamente para empaquetar los PDFs
-if (typeof window !== "undefined" && typeof JSZip === "undefined") {
-  const s = document.createElement("script");
-  s.src = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
-  document.head.appendChild(s);
-}
+// JSZip se carga via CDN en el HTML
 
 const DIAN_PROXY_URL = "/.netlify/functions/dian-proxy";
 
@@ -234,35 +229,20 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
 
       if (res.resultados && res.resultados.length > 0) {
         // Usar JSZip si está disponible, sino descargar uno por uno
-        if (typeof JSZip !== "undefined") {
-          // Crear ZIP con todos los PDFs
-          const zip = new JSZip();
-          res.resultados.forEach(r => {
-            const pdfBytes = Uint8Array.from(atob(r.pdf), c => c.charCodeAt(0));
-            zip.file(r.nombre, pdfBytes);
-          });
-          const zipBlob = await zip.generateAsync({ type: "blob" });
-          const url = URL.createObjectURL(zipBlob);
+        // Descargar PDFs uno por uno ordenados por nombre (fecha_emisor_numero)
+        for (const r of res.resultados) {
+          const pdfBytes = Uint8Array.from(atob(r.pdf), c => c.charCodeAt(0));
+          const blob = new Blob([pdfBytes], { type: "application/pdf" });
+          const url = URL.createObjectURL(blob);
           const a = document.createElement("a");
           a.href = url;
-          a.download = `facturas_DIAN_${new Date().toISOString().slice(0,10)}.zip`;
+          a.download = r.nombre;
+          document.body.appendChild(a);
           a.click();
+          document.body.removeChild(a);
           URL.revokeObjectURL(url);
-          addLog(`✓ ZIP descargado con ${res.resultados.length} PDFs ordenados`, "ok");
-        } else {
-          // Descargar uno por uno
-          for (const r of res.resultados) {
-            const pdfBytes = Uint8Array.from(atob(r.pdf), c => c.charCodeAt(0));
-            const blob = new Blob([pdfBytes], { type: "application/pdf" });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = r.nombre;
-            a.click();
-            URL.revokeObjectURL(url);
-            await new Promise(r => setTimeout(r, 300));
-            addLog(`✓ ${r.nombre}`, "ok");
-          }
+          await new Promise(res => setTimeout(res, 400));
+          addLog(`✓ ${r.nombre}`, "ok");
         }
       }
 
