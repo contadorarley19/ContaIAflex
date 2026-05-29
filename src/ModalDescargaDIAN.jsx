@@ -212,47 +212,132 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
     .reduce((s, f) => s + (f.valor || 0), 0);
 
 
-  // ── DESCARGAR PDFs ORDENADOS ──────────────────────────────────────────────
+  // ── DESCARGAR PDFs + EXCEL EN ZIP CON CARPETAS POR MES ─────────────────
   const descargarPDFs = async () => {
     if (!cookies || facturas.length === 0) return;
-    const seleccionadas = facturas.filter(f => seleccion.has(f.trackId));
+    const seleccionadas = [...facturas.filter(f => seleccion.has(f.trackId))]
+      .sort((a, b) => (a.fecha || "").localeCompare(b.fecha || ""));
     if (seleccionadas.length === 0) { alert("Selecciona al menos una factura"); return; }
 
     setDescargandoPDFs(true);
     setProgresosPDF({ actual: 0, total: seleccionadas.length });
-    addLog(`Descargando ${seleccionadas.length} PDFs ordenados por fecha...`, "info");
+    addLog(`Preparando ${seleccionadas.length} PDFs + Excel en ZIP por mes...`, "info");
+
+    const archivos = []; // { carpeta, nombre, bytes }
+    let errCount = 0;
+
+    for (let i = 0; i < seleccionadas.length; i++) {
+      const f = seleccionadas[i];
+      setProgresosPDF({ actual: i + 1, total: seleccionadas.length });
+      try {
+        const resPdf = await dianProxy("download_pdf_single", { cookies, trackId: f.trackId });
+        if (!resPdf.ok || !resPdf.pdf) throw new Error("Sin PDF");
+        const emisorLimpio = (f.emisor || "desconocido")
+          .replace(/[^a-zA-Z0-9]/g, "_").replace(/_+/g, "_")
+          .substring(0, 30).toUpperCase();
+        const nombre = `${f.fecha || "0000-00-00"}_${emisorLimpio}_${(f.prefijo || "") + (f.nroDocumento || "")}.pdf`;
+        const mes = (f.fecha || "0000-00").slice(0, 7);
+        const pdfBytes = Uint8Array.from(atob(resPdf.pdf), c => c.charCodeAt(0));
+        archivos.push({ carpeta: mes + "/", nombre, bytes: pdfBytes, factura: f });
+        addLog(`✓ ${mes}/${nombre}`, "ok");
+        await new Promise(r => setTimeout(r, 300));
+      } catch(e) {
+        errCount++;
+        addLog(`⚠ ${f.emisor || f.trackId.slice(0,8)}: ${e.message}`, "warn");
+        // Agregar al Excel aunque falle el PDF
+        const mes = (f.fecha || "0000-00").slice(0, 7);
+        archivos.push({ carpeta: mes + "/", nombre: null, bytes: null, factura: f });
+      }
+    }
+
+    addLog(`─── Armando ZIP con carpetas y Excel... ───`, "info");
 
     try {
-      const res = await dianProxy("download_pdfs", { cookies, facturas: seleccionadas });
-
-      setProgresosPDF({ actual: seleccionadas.length, total: seleccionadas.length });
-
-      if (res.resultados && res.resultados.length > 0) {
-        // Usar JSZip si está disponible, sino descargar uno por uno
-        // Descargar PDFs uno por uno ordenados por nombre (fecha_emisor_numero)
-        for (const r of res.resultados) {
-          const pdfBytes = Uint8Array.from(atob(r.pdf), c => c.charCodeAt(0));
-          const blob = new Blob([pdfBytes], { type: "application/pdf" });
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = r.nombre;
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          URL.revokeObjectURL(url);
-          await new Promise(res => setTimeout(res, 400));
-          addLog(`✓ ${r.nombre}`, "ok");
-        }
+      // Cargar JSZip
+      if (!window.JSZip) {
+        await new Promise((resolve, reject) => {
+          const s = document.createElement("script");
+          s.src = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
+          s.onload = resolve; s.onerror = reject;
+          document.head.appendChild(s);
+        });
       }
 
-      if (res.errores && res.errores.length > 0) {
-        res.errores.forEach(e => addLog(`⚠ ${e.emisor}: ${e.error}`, "warn"));
-      }
+      const zip = new window.JSZip();
 
-      addLog(`─── ${res.exitosos}/${res.total} PDFs descargados ───`, "ok");
+      // Agregar PDFs en carpetas por mes
+      archivos.forEach(({ carpeta, nombre, bytes }) => {
+        if (bytes && nombre) zip.folder(carpeta).file(nombre, bytes);
+      });
+
+      // Generar Excel con XLSX
+      const headers = [
+        "Tipo Documento", "CUFE/CUDE", "Folio", "Prefijo", "N° Factura",
+        "Fecha Emisión", "Fecha Recepción", "NIT Emisor", "Emisor",
+        "NIT Receptor", "Receptor", "Estado", "Estado RADIAN",
+        "IVA", "Total",
+      ];
+      const filas = archivos.map(({ factura: f }) => [
+        f.tipo || "Factura electrónica",
+        f.trackId || "",
+        "",
+        f.prefijo || "",
+        f.nroDocumento || "",
+        f.fecha || "",
+        f.fechaRecepcion || "",
+        f.nitEmisor || "",
+        f.emisor || "",
+        "",
+        f.receptor || "",
+        f.resultado || "Aprobado con notificación",
+        "Factura Electrónica",
+        f.iva || 0,
+        f.valor || 0,
+      ]);
+
+      // Crear hoja Excel con XLSX.js (ya está disponible en ContaIA)
+      const wsData = [headers, ...filas];
+      const ws = XLSX.utils.aoa_to_sheet(wsData);
+      // Ancho de columnas
+      ws["!cols"] = [
+        {wch:20},{wch:64},{wch:8},{wch:10},{wch:18},{wch:14},{wch:16},
+        {wch:14},{wch:40},{wch:14},{wch:30},{wch:25},{wch:20},{wch:14},{wch:14},
+      ];
+      // Formato moneda para IVA y Total
+      const fmtPesos = '#,##0';
+      filas.forEach((_, i) => {
+        const rowIdx = i + 2;
+        ["N", "O"].forEach(col => {
+          const cell = ws[col + rowIdx];
+          if (cell) cell.z = fmtPesos;
+        });
+      });
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Facturas DIAN");
+      const xlsxBytes = XLSX.write(wb, { bookType: "xlsx", type: "array" });
+
+      // Agregar Excel al ZIP en la raíz
+      const desde = seleccionadas[0]?.fecha || "inicio";
+      const hasta = seleccionadas[seleccionadas.length - 1]?.fecha || "fin";
+      zip.file(`resumen_facturas_${desde}_al_${hasta}.xlsx`, xlsxBytes);
+
+      // Generar y descargar el ZIP
+      const zipBlob = await zip.generateAsync({
+        type: "blob", compression: "DEFLATE",
+        compressionOptions: { level: 6 },
+      });
+      const zipNombre = `facturas_DIAN_${desde}_al_${hasta}.zip`;
+      const url = URL.createObjectURL(zipBlob);
+      const a = document.createElement("a");
+      a.href = url; a.download = zipNombre;
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a); URL.revokeObjectURL(url);
+
+      const meses = new Set(archivos.map(a => a.carpeta)).size;
+      addLog(`✓ ZIP descargado: ${zipNombre}`, "ok");
+      addLog(`✓ ${archivos.filter(a=>a.bytes).length} PDFs en ${meses} carpetas de mes + Excel`, "ok");
     } catch(e) {
-      addLog(`✗ Error: ${e.message}`, "error");
+      addLog(`✗ Error armando ZIP: ${e.message}`, "error");
     }
 
     setDescargandoPDFs(false);
