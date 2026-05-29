@@ -186,7 +186,7 @@ function parseXML(xmlText) {
     const schemeID = companyIDNode?.getAttribute("schemeID") || "";
     const taxLevelCode = gn(sup, "TaxLevelCode");
     const items = Array.from(doc.getElementsByTagNameNS("*", "InvoiceLine")).map(l => ({ descripcion: l.getElementsByTagNameNS("*", "Description")[0]?.textContent?.trim() || "", cantidad: parseFloat(l.getElementsByTagNameNS("*", "InvoicedQuantity")[0]?.textContent || "1"), valor: rnd(l.getElementsByTagNameNS("*", "LineExtensionAmount")[0]?.textContent) }));
-    return { prefijo: ns("ID"), fecha: ns("IssueDate"), nitProveedor: gn(sup, "CompanyID") || ns("CompanyID"), razonSocial: gn(sup, "RegistrationName") || ns("RegistrationName"), schemeID, additionalAccountID, taxLevelCode, esGranContribuyente: taxLevelCode.includes("O-13"), esAutorretenedorIVA: taxLevelCode.includes("O-15"), direccion: gn(sup, "Line"), ciudad: gn(sup, "CityName"), departamento: gn(sup, "CountrySubentity"), telefono: gn(sup, "Telephone"), email: gn(sup, "ElectronicMail"), subtotal: rnd(ns("LineExtensionAmount")), totalIva: rnd(ns("TaxAmount")), total: rnd(ns("PayableAmount")), items };
+    const subtotalRaw = rnd(ns("LineExtensionAmount")); const ivaRaw = rnd(ns("TaxAmount")); const totalRaw = rnd(ns("PayableAmount")); const subtotalFinal = subtotalRaw > 0 ? subtotalRaw : items.reduce((s,i)=>s+i.valor,0); const totalFinal = totalRaw > 0 ? totalRaw : subtotalFinal + ivaRaw; return { prefijo: ns("ID"), fecha: ns("IssueDate"), nitProveedor: gn(sup, "CompanyID") || ns("CompanyID"), razonSocial: gn(sup, "RegistrationName") || ns("RegistrationName"), schemeID, additionalAccountID, taxLevelCode, esGranContribuyente: taxLevelCode.includes("O-13"), esAutorretenedorIVA: taxLevelCode.includes("O-15"), direccion: gn(sup, "Line"), ciudad: gn(sup, "CityName"), departamento: gn(sup, "CountrySubentity"), telefono: gn(sup, "Telephone"), email: gn(sup, "ElectronicMail"), subtotal: subtotalFinal, totalIva: ivaRaw, total: totalFinal, items };
   } catch { return null; }
 }
 
@@ -239,6 +239,9 @@ function construirAsiento(datos, ia, rete, pucCuentas, esAutorretenedor, tratIva
     if (!val) return;
     const cod = String(l.cuenta_codigo || "");
     if (cod.startsWith("22") || cod.startsWith("23") || cod.startsWith("24")) return;
+    // Evitar IVA duplicado: si la IA pone IVA en lineas_contables Y existe cuenta_iva_codigo, ignorar
+    const descL = (l.descripcion || "").toLowerCase();
+    if (ia.cuenta_iva_codigo && (descL.includes("iva") || descL.includes("impuesto sobre las ventas") || descL.includes("impuesto a las ventas"))) return;
     const aux = resolverAuxiliar(cod);
     filas.push({ id: `lc${i}`, tipo: "debito", cuenta: aux.cod, descripcion: l.descripcion || ia.concepto_general, valor: val, editable: true, eliminable: true, advertencia: aux.advertencia });
     totalDeb += val;
@@ -305,7 +308,7 @@ function FacturaCard({ f, idx, docNum, onUpdate, onAprender }) {
   const neto     = filas.find(r => r.id === "prov")?.valor || 0;
   const hayAdv   = filas.some(r => r.advertencia);
   if (f.procesando) return (<div style={{ background: "#161923", border: "1px solid #1e3a5f", borderRadius: 10, padding: "14px 16px", display: "flex", alignItems: "center", gap: 12 }}><div style={{ fontSize: 22, animation: "spin 1s linear infinite", display: "inline-block" }}>⚙️</div><div style={{ flex: 1 }}><div style={{ fontSize: 12, color: "#60a5fa", fontWeight: 600 }}>Procesando con IA...</div><div style={{ fontSize: 11, color: "#475569", marginTop: 2, fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.archivo}</div></div><span style={{ fontSize: 10, color: "#475569", background: "#0d101a", border: "1px solid #1e2235", borderRadius: 20, padding: "2px 8px" }}>En cola</span></div>);
-  if (f.error) return (<div style={{ background: "#1a0a0a", border: "1px solid #3b1f1f", borderRadius: 10, padding: "12px 16px", display: "flex", flexDirection: "column", gap: 8 }}><div style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={{ color: "#64748b", fontSize: 11 }}>#{String(idx + 1).padStart(2, "0")}</span><span style={{ color: "#f87171", fontSize: 12, flex: 1 }}>❌ {f.archivo}: {f.error}</span></div><div style={{ display: "flex", gap: 8 }}>{f.error.toString().includes("DUPLICADO") && (<button onClick={() => { onUpdate(f.id, "error", null); onUpdate(f.id, "aprobado", false); }} style={{ background: "rgba(251,191,36,.15)", color: "#fbbf24", border: "1px solid rgba(251,191,36,.3)", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 600 }}>⚡ Ignorar duplicado</button>)}<button onClick={() => onUpdate(f.id, "_eliminar", true)} style={{ background: "rgba(248,113,113,.1)", color: "#f87171", border: "1px solid rgba(248,113,113,.2)", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontSize: 11, fontFamily: "inherit" }}>🗑 Eliminar</button></div></div>);
+  if (f.error) return (<div style={{ background: "#1a0a0a", border: "1px solid #3b1f1f", borderRadius: 10, padding: "12px 16px", display: "flex", flexDirection: "column", gap: 8 }}><div style={{ display: "flex", alignItems: "center", gap: 8 }}><span style={{ color: "#64748b", fontSize: 11 }}>#{String(idx + 1).padStart(2, "00")}</span><span style={{ color: "#f87171", fontSize: 12, flex: 1 }}>❌ {f.archivo}: {f.error}</span></div><div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>{f.error.toString().includes("DUPLICADO") && (<button onClick={() => { onUpdate(f.id, "error", null); onUpdate(f.id, "aprobado", false); }} style={{ background: "rgba(251,191,36,.15)", color: "#fbbf24", border: "1px solid rgba(251,191,36,.3)", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 600 }}>⚡ Ignorar duplicado</button>)}{f.xmlOriginal && (<button onClick={() => { onUpdate(f.id, "error", null); onUpdate(f.id, "_reprocesar_xml", true); }} style={{ background: "rgba(96,165,250,.15)", color: "#60a5fa", border: "1px solid rgba(96,165,250,.3)", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 600 }}>🔄 Reintentar</button>)}<button onClick={() => onUpdate(f.id, "_eliminar", true)} style={{ background: "rgba(248,113,113,.1)", color: "#f87171", border: "1px solid rgba(248,113,113,.2)", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontSize: 11, fontFamily: "inherit" }}>🗑 Eliminar</button></div></div>);
   return (
     <div id={`factura-${f.id}`} style={{ background: "#161923", border: `1px solid ${f.aprobado ? "#166534" : cuadra ? "#232840" : "#7c3700"}`, borderRadius: 12, overflow: "hidden" }}>
       <div style={{ background: "#0d101a", borderBottom: "1px solid #1e2235", padding: "8px 16px", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -534,7 +537,7 @@ export default function App() {
             const base64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.onerror = () => rej(new Error("No se pudo leer PDF")); r.readAsDataURL(archivo); });
             const d = await callClaude({ model: "claude-sonnet-4-5", max_tokens: 1500, messages: [{ role: "user", content: [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }, { type: "text", text: 'Extrae datos de esta factura. SOLO JSON sin markdown: {"prefijo":"","fecha":"YYYY-MM-DD","nitProveedor":"","razonSocial":"","schemeID":"31","subtotal":0,"totalIva":0,"total":0,"items":[{"descripcion":"","cantidad":1,"valor":0}]}' }] }] });
             datos = JSON.parse(d.content.map(b => b.text || "").join("").replace(/```json|```/g, "").trim());
-          } else { const t = await archivo.text(); datos = parseXML(t) || {}; }
+          } else { const t = await archivo.text(); datos = parseXML(t) || {}; datos._xmlOriginal = t; }
           const nit = (datos.nitProveedor || "").replace(/[^0-9]/g, "");
           const esAutoRet = !!autorretenedores[nit] || !!datos.esAutorretenedorIVA;
           const persona = detectarPersona(nit, datos.razonSocial, datos.schemeID, datos.additionalAccountID);
@@ -542,8 +545,8 @@ export default function App() {
           const rete = calcularRetencion(ia.tipo_retencion, persona, datos.fecha || "2026-01-01", datos.subtotal || 0, pucCuentas, esAutoRet);
           try { const tercero = extraerTercero(datos, persona, esAutoRet, empresaActual?.id); if (tercero) { Promise.race([upsertTerceroSB(tercero), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000))]).catch(() => {}); } } catch(e) {}
           const asiento = construirAsiento(datos, ia, rete, pucCuentas, esAutoRet, tratIva);
-          setFacturas(prev => prev.map(f => f.id === placeholderId ? { ...f, procesando: false, empresa: empresaActual, ...datos, nit, persona, ia, rete, reteInfo: rete, retefuente: rete.valor, esAutorretenedor: esAutoRet, aprobado: false, asiento } : f));
-        } catch (e) { setFacturas(prev => prev.map(f => f.id === placeholderId ? { ...f, procesando: false, error: e.message || "Error procesando" } : f)); }
+          setFacturas(prev => prev.map(f => f.id === placeholderId ? { ...f, procesando: false, empresa: empresaActual, ...datos, xmlOriginal: datos._xmlOriginal || null, nit, persona, ia, rete, reteInfo: rete, retefuente: rete.valor, esAutorretenedor: esAutoRet, aprobado: false, asiento } : f));
+        } catch (e) { setFacturas(prev => prev.map(f => f.id === placeholderId ? { ...f, procesando: false, error: e.message || "Error procesando", xmlOriginal: datos?._xmlOriginal || null } : f)); }
       })(archivos[i]);
       if (i < archivos.length - 1) { const pausa = (i + 1) % LOTE === 0 ? 5000 : 2000; await sleep(pausa); }
     }
@@ -551,7 +554,7 @@ export default function App() {
   };
 
   const upd = (id, k, v) => {
-    if (k === "_eliminar" || k === "_reprocesar") { setFacturas(p => p.filter(f => f.id !== id)); setAprobadasAcumRaw(p => { const n=p.filter(f=>f.id!==id); localStorage.setItem("cf_ia_aprobadas",JSON.stringify(n)); return n; }); return; }
+    if (k === "_reprocesar_xml") { const fac = facturas.find(f => f.id === id); if (fac && fac.xmlOriginal) { upd(fac.id, "_eliminar", true); setTimeout(() => { const file = new File([fac.xmlOriginal], fac.archivo || "factura.xml", { type: "text/xml" }); setModal({ archivos: [file] }); }, 100); } return; } if (k === "_eliminar" || k === "_reprocesar") { setFacturas(p => p.filter(f => f.id !== id)); setAprobadasAcumRaw(p => { const n=p.filter(f=>f.id!==id); localStorage.setItem("cf_ia_aprobadas",JSON.stringify(n)); return n; }); return; }
     setFacturas(prev => prev.map(f => f.id === id ? { ...f, [k]: v } : f));
     if (k === "aprobado") { setAprobadasAcumRaw(prev2 => { let nuevas; if (v === true) { const sin = prev2.filter(x => x.id !== id); nuevas = [...sin, { ...facturas.find(f=>f.id===id)||{}, [k]: v }]; } else { nuevas = prev2.filter(x => x.id !== id); } localStorage.setItem("cf_ia_aprobadas", JSON.stringify(nuevas)); return nuevas; }); }
   };
