@@ -435,6 +435,108 @@ function PanelCorreccion({ facturas, pucCuentas, onUpdate, onClose }) {
   return (<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.92)",zIndex:3000,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}><div style={{background:"#161923",border:"1px solid #232840",borderRadius:16,maxWidth:800,width:"100%",maxHeight:"90vh",display:"flex",flexDirection:"column"}}><div style={{padding:"14px 20px",borderBottom:"1px solid #1e2235",display:"flex",alignItems:"center",gap:12}}><div style={{fontFamily:"sans-serif",fontWeight:700,fontSize:15,color:"#fff"}}>🔧 Corrección masiva de cuentas</div><span style={{fontSize:11,color:"#64748b"}}>{lista.length} cuentas</span><div style={{marginLeft:"auto",display:"flex",gap:8}}><button onClick={aplicarCorrecciones} style={{background:"#4f7cff",color:"#fff",border:"none",borderRadius:6,padding:"6px 16px",cursor:"pointer",fontSize:12,fontWeight:700}}>✓ Aplicar</button><button onClick={onClose} style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",borderRadius:6,padding:"4px 10px",cursor:"pointer",fontSize:12}}>✕</button></div></div><div style={{flex:1,overflowY:"auto",padding:"12px 20px"}}><table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}><thead><tr style={{background:"#0d101a"}}>{["Cuenta","Nombre PUC","¿En PUC?","Corregir a"].map(h=><th key={h} style={{padding:"7px 10px",textAlign:"left",color:"#475569",fontSize:10,fontWeight:600,borderBottom:"1px solid #1e2235"}}>{h}</th>)}</tr></thead><tbody>{lista.map(c=>(<tr key={c.codigo} style={{borderBottom:"1px solid #1a1d27",background:!c.enPuc?"#1a0a0a":"transparent"}}><td style={{padding:"6px 10px",fontFamily:"monospace",color:c.enPuc?"#60a5fa":"#f87171",fontWeight:600}}>{c.codigo}</td><td style={{padding:"6px 10px",color:"#94a3b8"}}>{c.nombrePuc||c.descripcion}</td><td style={{padding:"6px 10px",textAlign:"center"}}>{c.enPuc?<span style={{color:"#22c55e"}}>✓</span>:<span style={{color:"#f87171"}}>✗</span>}</td><td style={{padding:"6px 10px"}}><select onChange={e=>setCorrecciones(p=>({...p,[c.codigo]:e.target.value}))} style={{background:"#0f1117",border:`1px solid ${!c.enPuc?"#f87171":"#2d3352"}`,color:"#e2e8f0",borderRadius:5,padding:"3px 7px",fontSize:11,width:"100%",cursor:"pointer",outline:"none"}}><option value="">— sin cambio —</option>{pucCuentas.filter(p=>p.codigo.startsWith(c.codigo.slice(0,2))).map(p=><option key={p.codigo} value={p.codigo}>{p.codigo} — {p.nombre}</option>)}</select></td></tr>))}</tbody></table></div></div></div>);
 }
 
+
+// ─── EXPORTAR EXCEL DETALLADO ─────────────────────────────────────────────────
+function exportarExcelDetallado(facturas) {
+  const lista = [...facturas]
+    .filter(f => f.aprobado && !f.error && f.asiento)
+    .sort((a, b) => (a.fecha || "").localeCompare(b.fecha || ""));
+
+  if (lista.length === 0) { alert("No hay facturas aprobadas para exportar"); return; }
+
+  const fmt = n => Math.round(Number(n || 0));
+
+  const headers = [
+    "Fecha",
+    "N° Factura",
+    "NIT Proveedor",
+    "Proveedor",
+    "Concepto",
+    "Tipo Retención",
+    "Tarifa Retención %",
+    "Subtotal",
+    "IVA",
+    "Retención",
+    "Total Factura",
+    "Neto a Pagar",
+    "Persona",
+    "Autorretenedor",
+  ];
+
+  const filas = lista.map(f => {
+    const rete       = f.rete || f.reteInfo || {};
+    const retefuente = fmt(f.retefuente || rete.valor || 0);
+    const subtotal   = fmt(f.subtotal || 0);
+    const iva        = fmt(f.totalIva || 0);
+    const total      = fmt(f.total || 0);
+    const neto       = total - retefuente;
+
+    return [
+      f.fecha || "",
+      (f.prefijo || "") + (f.nroDocumento || f.prefijo || ""),
+      (f.nitProveedor || f.nit || "").replace(/[^0-9]/g, ""),
+      f.razonSocial || "",
+      f.ia?.concepto_general || "",
+      f.ia?.tipo_retencion || "",
+      rete.pct || 0,
+      subtotal,
+      iva,
+      retefuente,
+      total,
+      neto,
+      f.persona === "juridica" ? "Jurídica" : f.persona === "natural" ? "Natural" : "",
+      f.esAutorretenedor ? "Sí" : "No",
+    ];
+  });
+
+  // Totales
+  const totales = [
+    "TOTAL", "", "", "", "", "", "",
+    filas.reduce((s, r) => s + r[7], 0),
+    filas.reduce((s, r) => s + r[8], 0),
+    filas.reduce((s, r) => s + r[9], 0),
+    filas.reduce((s, r) => s + r[10], 0),
+    filas.reduce((s, r) => s + r[11], 0),
+    "", "",
+  ];
+
+  const wsData = [headers, ...filas, totales];
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+
+  // Anchos de columna
+  ws["!cols"] = [
+    {wch:12},{wch:18},{wch:14},{wch:38},{wch:45},
+    {wch:16},{wch:10},{wch:14},{wch:12},{wch:12},
+    {wch:14},{wch:14},{wch:10},{wch:14},
+  ];
+
+  // Formato moneda para columnas numéricas (H a L = índices 7-11)
+  const fmtPesos = "#,##0";
+  const colsNum = [7, 8, 9, 10, 11]; // Subtotal, IVA, Retención, Total, Neto
+  wsData.forEach((row, ri) => {
+    if (ri === 0) return; // saltar header
+    colsNum.forEach(ci => {
+      const cellRef = XLSX.utils.encode_cell({ r: ri, c: ci });
+      if (ws[cellRef]) ws[cellRef].z = fmtPesos;
+    });
+  });
+
+  // Estilo fila de totales (negrita)
+  const totalRow = filas.length + 1;
+  headers.forEach((_, ci) => {
+    const cellRef = XLSX.utils.encode_cell({ r: totalRow, c: ci });
+    if (ws[cellRef] && !ws[cellRef].s) ws[cellRef].s = { font: { bold: true } };
+  });
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Facturas");
+
+
+
+  const fecha = new Date().toISOString().slice(0, 10);
+  XLSX.writeFile(wb, `facturas_detallado_${fecha}.xlsx`);
+}
+
 function generarId() { const chars = "abcdefghijklmnopqrstuvwxyz0123456789"; return Array.from({length:8}, () => chars[Math.floor(Math.random()*chars.length)]).join(""); }
 
 async function enviarAContaFlex(facturas, empresaActual, tipoCod = "CO") {
@@ -714,6 +816,7 @@ export default function App() {
                       ))}
                     </div>
                     <div style={{ display:"flex",justifyContent:"flex-end",gap:10 }}>
+                      <button onClick={() => exportarExcelDetallado(aprobadasAcum)} style={{background:"#0ea5e9",color:"#fff",border:"none",borderRadius:7,padding:"9px 22px",cursor:"pointer",fontSize:13,fontWeight:700,fontFamily:"inherit"}}>📊 Excel detallado</button>
                       <button onClick={()=>setModalExport(true)} style={{background:"#22c55e",color:"#fff",border:"none",borderRadius:7,padding:"9px 22px",cursor:"pointer",fontSize:13,fontWeight:700}}>⬇ Excel</button>
                       <button onClick={()=>setModalEnviar(true)} style={{background:"#8b5cf6",color:"#fff",border:"none",borderRadius:7,padding:"9px 22px",cursor:"pointer",fontSize:13,fontWeight:700}}>↗ ContaFlex</button>
                     </div>
