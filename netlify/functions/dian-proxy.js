@@ -97,9 +97,24 @@ function extractXmlFromZip(buffer) {
       const ext = filename.toLowerCase();
       if (ext.endsWith(".xml") || ext.endsWith(".html")) {
         try {
+          let rawBytes;
+          if (compressionMethod === 0) rawBytes = compressedData;
+          else if (compressionMethod === 8) rawBytes = zlib.inflateRawSync(compressedData);
+          
           let content;
-          if (compressionMethod === 0) content = compressedData.toString("utf8");
-          else if (compressionMethod === 8) content = zlib.inflateRawSync(compressedData).toString("utf8");
+          if (rawBytes) {
+            // Detectar encoding desde el XML declaration
+            const head = rawBytes.slice(0, 200).toString("latin1");
+            if (head.includes("encoding="ISO-8859-1"") || head.includes("encoding='ISO-8859-1'")) {
+              content = rawBytes.toString("latin1");
+            } else if (head.includes("encoding="UTF-16"") || head.includes("encoding='UTF-16'")) {
+              content = rawBytes.toString("utf16le");
+            } else {
+              content = rawBytes.toString("utf8");
+            }
+            // Limpiar caracteres de control que rompen JSON
+            content = content.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+          }
           if (content) files.push({ filename, content });
         } catch(e) {}
       }
@@ -129,6 +144,33 @@ async function getVerificationToken(cookies) {
   const match = result.body.match(/name="__RequestVerificationToken"[^>]+value="([^"]+)"/);
   const token = match ? match[1] : "";
   return { token, cookies: newCookies };
+}
+
+
+function extractPdfFromZip(buffer) {
+  try {
+    const PK_SIG = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
+    let pos = 0;
+    while (pos < buffer.length - 4) {
+      const idx = buffer.indexOf(PK_SIG, pos);
+      if (idx === -1) break;
+      const compressionMethod = buffer.readUInt16LE(idx + 8);
+      const compressedSize    = buffer.readUInt32LE(idx + 18);
+      const filenameLength    = buffer.readUInt16LE(idx + 26);
+      const extraLength       = buffer.readUInt16LE(idx + 28);
+      const filename          = buffer.slice(idx + 30, idx + 30 + filenameLength).toString("utf8");
+      const dataStart         = idx + 30 + filenameLength + extraLength;
+      const compressedData    = buffer.slice(dataStart, dataStart + compressedSize);
+      if (filename.toLowerCase().endsWith(".pdf")) {
+        try {
+          if (compressionMethod === 0) return compressedData;
+          if (compressionMethod === 8) return zlib.inflateRawSync(compressedData);
+        } catch(e) {}
+      }
+      pos = dataStart + compressedSize;
+    }
+    return null;
+  } catch(e) { return null; }
 }
 
 exports.handler = async (event) => {
@@ -263,7 +305,8 @@ exports.handler = async (event) => {
       if (!isZip) return { statusCode: 422, headers, body: JSON.stringify({ error: "Respuesta no es ZIP. Sesion expirada." }) };
       const xmlContent = extractXmlFromZip(result.rawBuffer);
       if (!xmlContent) return { statusCode: 422, headers, body: JSON.stringify({ error: "Sin XML en ZIP" }) };
-      return { statusCode: 200, headers, body: JSON.stringify({ ok: true, xml: xmlContent, trackId, zipSize: result.rawBuffer.length }) };
+      const xmlB64 = Buffer.from(xmlContent, "utf8").toString("base64");
+      return { statusCode: 200, headers, body: JSON.stringify({ ok: true, xml: xmlB64, encoding: "base64", trackId, zipSize: result.rawBuffer.length }) };
     }
 
     // ── DOWNLOAD BATCH ────────────────────────────────────────────────────────
@@ -282,12 +325,67 @@ exports.handler = async (event) => {
             if (!isZip) throw new Error("No es ZIP");
             const xmlContent = extractXmlFromZip(result.rawBuffer);
             if (!xmlContent) throw new Error("Sin XML");
-            resultados.push({ trackId, xml: xmlContent, zipSize: result.rawBuffer.length });
+            // Enviar XML como base64 para evitar problemas de encoding/caracteres especiales
+            const xmlB64 = Buffer.from(xmlContent, "utf8").toString("base64");
+            resultados.push({ trackId, xml: xmlB64, encoding: "base64", zipSize: result.rawBuffer.length });
           } catch(e) { errores.push({ trackId, error: e.message }); }
         }));
         if (i + CONCURRENCY < trackIds.length) await new Promise(r => setTimeout(r, 500));
       }
       return { statusCode: 200, headers, body: JSON.stringify({ ok: true, resultados, errores, total: trackIds.length, exitosos: resultados.length }) };
+    }
+
+
+    // ── DOWNLOAD PDF BATCH ────────────────────────────────────────────────────
+    if (action === "download_pdfs") {
+      const { cookies, facturas } = body;
+      if (!cookies || !Array.isArray(facturas)) {
+        return { statusCode: 400, headers, body: JSON.stringify({ error: "cookies y facturas[] requeridos" }) };
+      }
+
+      // Ordenar por fecha + prefijo+numero
+      const ordenadas = [...facturas].sort((a, b) => {
+        const fa = (a.fecha || "") + (a.prefijo || "") + (a.nroDocumento || "");
+        const fb = (b.fecha || "") + (b.prefijo || "") + (b.nroDocumento || "");
+        return fa.localeCompare(fb);
+      });
+
+      const CONCURRENCY = 3;
+      const resultados = [], errores = [];
+
+      for (let i = 0; i < ordenadas.length; i += CONCURRENCY) {
+        const lote = ordenadas.slice(i, i + CONCURRENCY);
+        await Promise.all(lote.map(async (f) => {
+          try {
+            const result = await dianDownloadBinary("/Document/DownloadZipFiles?trackId=" + f.trackId, cookies);
+            if (result.statusCode !== 200) throw new Error("HTTP " + result.statusCode);
+
+            // Extraer PDF del ZIP
+            const pdfData = extractPdfFromZip(result.rawBuffer);
+            if (!pdfData) throw new Error("Sin PDF en ZIP");
+
+            // Nombre ordenado: fecha_emisor_prefijo+numero.pdf
+            const emisorLimpio = (f.emisor || "desconocido")
+              .replace(/[^a-zA-Z0-9À-ɏ]/g, "_")
+              .replace(/_+/g, "_")
+              .substring(0, 30)
+              .toUpperCase();
+            const nombre = `${f.fecha || "0000-00-00"}_${emisorLimpio}_${(f.prefijo || "") + (f.nroDocumento || "")}.pdf`;
+
+            // Enviar PDF como base64
+            const pdfB64 = pdfData.toString("base64");
+            resultados.push({ trackId: f.trackId, nombre, pdf: pdfB64, size: pdfData.length });
+          } catch(e) {
+            errores.push({ trackId: f.trackId, emisor: f.emisor, error: e.message });
+          }
+        }));
+        if (i + CONCURRENCY < ordenadas.length) await new Promise(r => setTimeout(r, 400));
+      }
+
+      return {
+        statusCode: 200, headers,
+        body: JSON.stringify({ ok: true, resultados, errores, total: ordenadas.length, exitosos: resultados.length }),
+      };
     }
 
     return { statusCode: 400, headers, body: JSON.stringify({ error: "Accion desconocida: " + action }) };
