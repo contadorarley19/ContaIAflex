@@ -105,9 +105,9 @@ function extractXmlFromZip(buffer) {
           if (rawBytes) {
             // Detectar encoding desde el XML declaration
             const head = rawBytes.slice(0, 200).toString("latin1");
-            if (head.includes("encoding="ISO-8859-1"") || head.includes("encoding='ISO-8859-1'")) {
+            if (head.includes('ISO-8859-1') || head.includes('iso-8859-1')) {
               content = rawBytes.toString("latin1");
-            } else if (head.includes("encoding="UTF-16"") || head.includes("encoding='UTF-16'")) {
+            } else if (head.includes('UTF-16') || head.includes('utf-16')) {
               content = rawBytes.toString("utf16le");
             } else {
               content = rawBytes.toString("utf8");
