@@ -150,11 +150,16 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
       try {
         const res = await dianProxy("download_batch", { cookies, trackIds: lote });
 
-        // Procesar exitosos
+        // Procesar exitosos — decodificar base64 si es necesario
         (res.resultados || []).forEach(r => {
           const factura = facturas.find(f => f.trackId === r.trackId);
           const nombre  = `${factura?.emisor?.replace(/[^a-zA-Z0-9]/g, "_") || "factura"}_${r.trackId.slice(0, 8)}.xml`;
-          xmlsOk.push({ nombre, contenido: r.xml, trackId: r.trackId, factura });
+          // Decodificar base64 si el proxy lo envió así
+          let contenido = r.xml;
+          if (r.encoding === "base64") {
+            try { contenido = atob(r.xml); } catch(e) { contenido = r.xml; }
+          }
+          xmlsOk.push({ nombre, contenido, trackId: r.trackId, factura });
           addLog(`✓ ${factura?.emisor || r.trackId.slice(0, 12)} — ${fmt(factura?.valor)}`, "ok");
         });
 
