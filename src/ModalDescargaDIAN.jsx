@@ -26,6 +26,12 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { useState, useEffect, useRef } from "react";
+// JSZip se carga dinámicamente para empaquetar los PDFs
+if (typeof window !== "undefined" && typeof JSZip === "undefined") {
+  const s = document.createElement("script");
+  s.src = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
+  document.head.appendChild(s);
+}
 
 const DIAN_PROXY_URL = "/.netlify/functions/dian-proxy";
 
@@ -71,6 +77,8 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
   const [facturas,    setFacturas]    = useState([]);
   const [seleccion,   setSeleccion]   = useState(new Set());
   const [cargando,    setCargando]    = useState(false);
+  const [descargandoPDFs, setDescargandoPDFs] = useState(false);
+  const [progresosPDF,    setProgresosPDF]    = useState({ actual: 0, total: 0 });
   const [progreso,    setProgreso]    = useState({ actual: 0, total: 0 });
   const [logs,        setLogs]        = useState([]);
   const [error,       setError]       = useState("");
@@ -207,6 +215,68 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
   const totalSel = facturas
     .filter(f => seleccion.has(f.trackId))
     .reduce((s, f) => s + (f.valor || 0), 0);
+
+
+  // ── DESCARGAR PDFs ORDENADOS ──────────────────────────────────────────────
+  const descargarPDFs = async () => {
+    if (!cookies || facturas.length === 0) return;
+    const seleccionadas = facturas.filter(f => seleccion.has(f.trackId));
+    if (seleccionadas.length === 0) { alert("Selecciona al menos una factura"); return; }
+
+    setDescargandoPDFs(true);
+    setProgresosPDF({ actual: 0, total: seleccionadas.length });
+    addLog(`Descargando ${seleccionadas.length} PDFs ordenados por fecha...`, "info");
+
+    try {
+      const res = await dianProxy("download_pdfs", { cookies, facturas: seleccionadas });
+
+      setProgresosPDF({ actual: seleccionadas.length, total: seleccionadas.length });
+
+      if (res.resultados && res.resultados.length > 0) {
+        // Usar JSZip si está disponible, sino descargar uno por uno
+        if (typeof JSZip !== "undefined") {
+          // Crear ZIP con todos los PDFs
+          const zip = new JSZip();
+          res.resultados.forEach(r => {
+            const pdfBytes = Uint8Array.from(atob(r.pdf), c => c.charCodeAt(0));
+            zip.file(r.nombre, pdfBytes);
+          });
+          const zipBlob = await zip.generateAsync({ type: "blob" });
+          const url = URL.createObjectURL(zipBlob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = `facturas_DIAN_${new Date().toISOString().slice(0,10)}.zip`;
+          a.click();
+          URL.revokeObjectURL(url);
+          addLog(`✓ ZIP descargado con ${res.resultados.length} PDFs ordenados`, "ok");
+        } else {
+          // Descargar uno por uno
+          for (const r of res.resultados) {
+            const pdfBytes = Uint8Array.from(atob(r.pdf), c => c.charCodeAt(0));
+            const blob = new Blob([pdfBytes], { type: "application/pdf" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = r.nombre;
+            a.click();
+            URL.revokeObjectURL(url);
+            await new Promise(r => setTimeout(r, 300));
+            addLog(`✓ ${r.nombre}`, "ok");
+          }
+        }
+      }
+
+      if (res.errores && res.errores.length > 0) {
+        res.errores.forEach(e => addLog(`⚠ ${e.emisor}: ${e.error}`, "warn"));
+      }
+
+      addLog(`─── ${res.exitosos}/${res.total} PDFs descargados ───`, "ok");
+    } catch(e) {
+      addLog(`✗ Error: ${e.message}`, "error");
+    }
+
+    setDescargandoPDFs(false);
+  };
 
   return (
     <div style={{
@@ -622,6 +692,23 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
             </button>
           )}
 
+          {paso === "listo" && xmlsDesc.length > 0 && (
+            <button
+              onClick={descargarPDFs}
+              disabled={descargandoPDFs}
+              style={{
+                background: descargandoPDFs ? "#1e2235" : "#1e3a5f",
+                color: descargandoPDFs ? "#475569" : "#60a5fa",
+                border: "1px solid rgba(96,165,250,.3)",
+                borderRadius: 6,
+                padding: "9px 20px",
+                cursor: descargandoPDFs ? "not-allowed" : "pointer",
+                fontSize: 13, fontWeight: 700,
+              }}
+            >
+              {descargandoPDFs ? "⏳ Descargando..." : "📄 Descargar PDFs"}
+            </button>
+          )}
           {paso === "listo" && xmlsDesc.length > 0 && (
             <button
               onClick={() => onXmlsDescargados(xmlsDesc)}
