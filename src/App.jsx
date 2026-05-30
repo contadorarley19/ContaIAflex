@@ -840,7 +840,7 @@ export default function App() {
                     <div style={{ display:"flex",justifyContent:"flex-end",gap:10 }}>
                       <button onClick={() => exportarExcelDetallado(aprobadasAcum)} style={{background:"#0ea5e9",color:"#fff",border:"none",borderRadius:7,padding:"9px 22px",cursor:"pointer",fontSize:13,fontWeight:700,fontFamily:"inherit"}}>📊 Excel detallado</button>
                       <button onClick={()=>setModalExport(true)} style={{background:"#22c55e",color:"#fff",border:"none",borderRadius:7,padding:"9px 22px",cursor:"pointer",fontSize:13,fontWeight:700}}>⬇ Excel</button>
-                      <button onClick={()=>setModalEnviar(true)} style={{background:"#8b5cf6",color:"#fff",border:"none",borderRadius:7,padding:"9px 22px",cursor:"pointer",fontSize:13,fontWeight:700}}}>↗ ContaFlex</button>
+                      <button onClick={()=>setModalEnviar(true)} style={{background:"#8b5cf6",color:"#fff",border:"none",borderRadius:7,padding:"9px 22px",cursor:"pointer",fontSize:13,fontWeight:700}}>↗ ContaFlex</button>
                     </div>
                   </div>
                 </div>
