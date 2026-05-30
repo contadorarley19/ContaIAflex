@@ -1,7 +1,9 @@
 // netlify/functions/dian-proxy.js
 const https = require("https");
 const zlib  = require("zlib");
-const DIAN_HOST = "catalogo-vpfe.dian.gov.co";
+// Host se determina dinámicamente según la URL del token
+const DIAN_HOST_PROD = "catalogo-vpfe.dian.gov.co";
+const DIAN_HOST_HAB  = "catalogo-vpfe-hab.dian.gov.co";
 
 function mergeCookies(existing, incoming) {
   if (!incoming) return existing || "";
@@ -13,19 +15,20 @@ function mergeCookies(existing, incoming) {
   return Object.entries(map).map(([k, v]) => `${k}=${v}`).join("; ");
 }
 
-function dianRequest(path, cookies, method, bodyStr) {
+function dianRequest(path, cookies, method, bodyStr, host) {
   method = method || "GET";
+  host = host || DIAN_HOST_PROD;
   return new Promise((resolve, reject) => {
     const bodyBuf = bodyStr ? Buffer.from(bodyStr, "utf8") : null;
     const options = {
-      hostname: DIAN_HOST, port: 443, path, method,
+      hostname: host, port: 443, path, method,
       headers: {
         "Cookie":           cookies || "",
         "User-Agent":       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/148.0.0.0 Safari/537.36",
         "Accept":           "application/json, text/javascript, */*; q=0.01",
         "Accept-Encoding":  "gzip, deflate, br",
         "Accept-Language":  "es-ES,es;q=0.9",
-        "Referer":          "https://" + DIAN_HOST + "/Document/Received",
+        "Referer":          "https://" + host + "/Document/Received",
         "X-Requested-With": "XMLHttpRequest",
         ...(bodyBuf ? {
           "Content-Type":   "application/x-www-form-urlencoded; charset=UTF-8",
@@ -55,15 +58,16 @@ function dianRequest(path, cookies, method, bodyStr) {
   });
 }
 
-function dianDownloadBinary(path, cookies) {
+function dianDownloadBinary(path, cookies, host) {
+  host = host || DIAN_HOST_PROD;
   return new Promise((resolve, reject) => {
     const options = {
-      hostname: DIAN_HOST, port: 443, path, method: "GET",
+      hostname: host, port: 443, path, method: "GET",
       headers: {
         "Cookie":           cookies || "",
         "User-Agent":       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept":           "application/zip,application/octet-stream,*/*",
-        "Referer":          "https://" + DIAN_HOST + "/Document/Received",
+        "Referer":          "https://" + host + "/Document/Received",
         "X-Requested-With": "XMLHttpRequest",
       },
     };
@@ -138,8 +142,9 @@ function parseDianDate(val) {
 }
 
 // Obtener el __RequestVerificationToken del HTML de la pagina
-async function getVerificationToken(cookies) {
-  const result = await dianRequest("/Document/Received", cookies, "GET", null);
+async function getVerificationToken(cookies, host) {
+  host = host || DIAN_HOST_PROD;
+  const result = await dianRequest("/Document/Received", cookies, "GET", null, host);
   const newCookies = mergeCookies(cookies, result.cookies);
   const match = result.body.match(/name="__RequestVerificationToken"[^>]+value="([^"]+)"/);
   const token = match ? match[1] : "";
@@ -198,10 +203,32 @@ exports.handler = async (event) => {
       if (!tokenUrl || !tokenUrl.includes("catalogo-vpfe.dian.gov.co")) {
         return { statusCode: 400, headers, body: JSON.stringify({ error: "URL de token invalida" }) };
       }
-      const url  = new URL(tokenUrl);
-      const path = url.pathname + url.search;
+      // Decodificar SafeLinks de Outlook si es necesario
+      let cleanUrl = tokenUrl.trim();
+      if (cleanUrl.includes("safelinks.protection.outlook.com")) {
+        try {
+          const safeUrl = new URL(cleanUrl);
+          const innerEncoded = safeUrl.searchParams.get("url") || "";
+          // Doble decodificacion porque SafeLinks hace doble encoding
+          cleanUrl = decodeURIComponent(decodeURIComponent(innerEncoded));
+        } catch(e) {
+          try {
+            const match = cleanUrl.match(/[?&]url=([^&]+)/);
+            if (match) cleanUrl = decodeURIComponent(decodeURIComponent(match[1]));
+          } catch(e2) {}
+        }
+      }
+      // También decodificar si viene con %3A%2F%2F (URL encoded completa)
+      if (cleanUrl.includes("%3A%2F%2F") || cleanUrl.includes("%3A%2f%2f")) {
+        cleanUrl = decodeURIComponent(cleanUrl);
+      }
 
-      let result = await dianRequest(path, "", "GET", null);
+      const url  = new URL(cleanUrl);
+      const path = url.pathname + url.search;
+      // Detectar ambiente según el host del token
+      const dianHost = url.hostname.includes("-hab") ? DIAN_HOST_HAB : DIAN_HOST_PROD;
+
+      let result = await dianRequest(path, "", "GET", null, dianHost);
       let cookies = result.cookies;
 
       // Seguir hasta 5 redirects
@@ -210,7 +237,7 @@ exports.handler = async (event) => {
         const loc = result.headers["location"] || "";
         const rPath = loc.startsWith("http") ? (new URL(loc)).pathname + (new URL(loc)).search : loc;
         cookies = mergeCookies(cookies, result.cookies);
-        result = await dianRequest(rPath, cookies, "GET", null);
+        result = await dianRequest(rPath, cookies, "GET", null, dianHost);
         redirects++;
       }
       cookies = mergeCookies(cookies, result.cookies);
@@ -219,19 +246,20 @@ exports.handler = async (event) => {
         return { statusCode: 401, headers, body: JSON.stringify({ error: "No se obtuvo sesion. El token expiro o ya fue usado." }) };
       }
 
-      return { statusCode: 200, headers, body: JSON.stringify({ ok: true, cookies, mensaje: "Sesion DIAN iniciada" }) };
+      return { statusCode: 200, headers, body: JSON.stringify({ ok: true, cookies, dianHost, mensaje: "Sesion DIAN iniciada" }) };
     }
 
     // ── LIST ──────────────────────────────────────────────────────────────────
     if (action === "list") {
-      const { cookies, desde, hasta } = body;
+      const { cookies, desde, hasta, dianHost: dh } = body;
+      const dianHost = dh || DIAN_HOST_PROD;
       if (!cookies) return { statusCode: 400, headers, body: JSON.stringify({ error: "Cookies requeridas" }) };
 
       const startDate = desde || new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
       const endDate   = hasta || new Date().toISOString().slice(0, 10);
 
       // Paso 1: obtener el __RequestVerificationToken de la pagina
-      const tokenInfo = await getVerificationToken(cookies);
+      const tokenInfo = await getVerificationToken(cookies, dianHost);
       const rvt = tokenInfo.token;
       const newCookies = tokenInfo.cookies;
 
@@ -255,7 +283,7 @@ exports.handler = async (event) => {
         "__RequestVerificationToken=" + encodeURIComponent(rvt),
       ].join("&");
 
-      const result = await dianRequest("/Document/GetDocumentsPageToken", newCookies, "POST", formBody);
+      const result = await dianRequest("/Document/GetDocumentsPageToken", newCookies, "POST", formBody, dianHost);
       const finalCookies = mergeCookies(newCookies, result.cookies);
 
       // Parsear el JSON de respuesta
@@ -297,9 +325,10 @@ exports.handler = async (event) => {
 
     // ── DOWNLOAD ──────────────────────────────────────────────────────────────
     if (action === "download") {
-      const { cookies, trackId } = body;
+      const { cookies, trackId, dianHost: dh2 } = body;
+      const dianHost2 = dh2 || DIAN_HOST_PROD;
       if (!cookies || !trackId) return { statusCode: 400, headers, body: JSON.stringify({ error: "cookies y trackId requeridos" }) };
-      const result = await dianDownloadBinary("/Document/DownloadZipFiles?trackId=" + trackId, cookies);
+      const result = await dianDownloadBinary("/Document/DownloadZipFiles?trackId=" + trackId, cookies, dianHost2);
       if (result.statusCode !== 200) return { statusCode: result.statusCode, headers, body: JSON.stringify({ error: "Error " + result.statusCode }) };
       const isZip = result.rawBuffer[0] === 0x50 && result.rawBuffer[1] === 0x4b;
       if (!isZip) return { statusCode: 422, headers, body: JSON.stringify({ error: "Respuesta no es ZIP. Sesion expirada." }) };
@@ -311,7 +340,8 @@ exports.handler = async (event) => {
 
     // ── DOWNLOAD BATCH ────────────────────────────────────────────────────────
     if (action === "download_batch") {
-      const { cookies, trackIds } = body;
+      const { cookies, trackIds, dianHost: dh3 } = body;
+      const dianHost3 = dh3 || DIAN_HOST_PROD;
       if (!cookies || !Array.isArray(trackIds)) return { statusCode: 400, headers, body: JSON.stringify({ error: "cookies y trackIds[] requeridos" }) };
       const CONCURRENCY = 5;
       const resultados = [], errores = [];
@@ -319,7 +349,7 @@ exports.handler = async (event) => {
         const lote = trackIds.slice(i, i + CONCURRENCY);
         await Promise.all(lote.map(async (trackId) => {
           try {
-            const result = await dianDownloadBinary("/Document/DownloadZipFiles?trackId=" + trackId, cookies);
+            const result = await dianDownloadBinary("/Document/DownloadZipFiles?trackId=" + trackId, cookies, dianHost3);
             if (result.statusCode !== 200) throw new Error("HTTP " + result.statusCode);
             const isZip = result.rawBuffer[0] === 0x50 && result.rawBuffer[1] === 0x4b;
             if (!isZip) throw new Error("No es ZIP");
