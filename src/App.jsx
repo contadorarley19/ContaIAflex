@@ -1,4 +1,4 @@
-// v2.1
+// v2.2 — extraerTercero sincronizado con ContaFlex
 import { useState, useEffect, useRef } from "react";
 import * as XLSX from "xlsx";
 import ModalDescargaDIAN from "./ModalDescargaDIAN";
@@ -150,16 +150,76 @@ function calcularDV(nit) {
   return String(r < 2 ? r : 11 - r);
 }
 
+// ─── NOMBRES (igual que ContaFlex) ───────────────────────────────────────────
+function separarNombreNatural(nombreCompleto) {
+  const p = (nombreCompleto || "").trim().toUpperCase().split(/\s+/);
+  if (p.length === 1) return { primer_apellido: p[0], segundo_apellido: "", primer_nombre: "", otros_nombres: "" };
+  if (p.length === 2) return { primer_apellido: p[0], segundo_apellido: "", primer_nombre: p[1], otros_nombres: "" };
+  if (p.length === 3) return { primer_apellido: p[0], segundo_apellido: p[1], primer_nombre: p[2], otros_nombres: "" };
+  return { primer_apellido: p[0], segundo_apellido: p[1], primer_nombre: p[2], otros_nombres: p.slice(3).join(" ") };
+}
+function construirNombreCompleto(ap1, ap2, nom1, otros) {
+  return [ap1, ap2, nom1, otros].map(s => (s || "").trim().toUpperCase()).filter(Boolean).join(" ");
+}
+
+// ─── DIVIPOLA QUICK ───────────────────────────────────────────────────────────
+const DIVIPOLA_QUICK = {
+  "BOGOTA":"11001","BOGOTÁ":"11001","MEDELLIN":"05001","MEDELLÍN":"05001",
+  "CALI":"76001","BARRANQUILLA":"08001","CARTAGENA":"13001","VILLAVICENCIO":"50001",
+  "BUCARAMANGA":"68001","MANIZALES":"17001","PEREIRA":"66001","IBAGUE":"73001","IBAGUÉ":"73001",
+  "CUCUTA":"54001","CÚCUTA":"54001","SANTA MARTA":"47001","NEIVA":"41001","ARMENIA":"63001",
+  "POPAYAN":"19001","POPAYÁN":"19001","MONTERIA":"23001","MONTERÍA":"23001","SINCELEJO":"70001",
+  "FLORENCIA":"18001","TUNJA":"15001","YOPAL":"85001","LETICIA":"91001","PASTO":"52001",
+  "VALLEDUPAR":"20001","RIOHACHA":"44001","QUIBDO":"27001","QUIBDÓ":"27001","MOCOA":"86001",
+  "BUENAVENTURA":"76109","PALMIRA":"76520","BELLO":"05088","ITAGUI":"05360","ENVIGADO":"05266",
+  "SOLEDAD":"08758","SOACHA":"25754","BARRANCABERMEJA":"68081",
+};
+
+// ─── EXTRAER TERCERO — formato 100% compatible con ContaFlex ──────────────────
 function extraerTercero(datos, persona, esAutorretenedor, empresaId) {
-  const nit = (datos.nitProveedor||"").replace(/[^0-9]/g,"");
+  const nit = (datos.nitProveedor || "").replace(/[^0-9]/g, "");
   if (!nit) return null;
-  const tlc = (datos.taxLevelCode||"").toUpperCase();
-  let regimen = "Responsable IVA";
-  if (tlc.includes("O-48")||tlc.includes("R-99")) regimen = "No Responsable IVA";
+  const tlc = (datos.taxLevelCode || "").toUpperCase();
+  let regimen = "Responsable de IVA";
+  if (tlc.includes("O-48") || tlc.includes("R-99")) regimen = "No Responsable de IVA";
   if (tlc.includes("O-47")) regimen = "Régimen Simple";
   if (tlc.includes("O-13")) regimen = "Gran Contribuyente";
-  const tipo_doc = persona === "juridica" ? "31" : "13";
-  return { id: Math.random().toString(36).slice(2) + Date.now().toString(36), empresa_id: empresaId, tipo_doc, numero: nit, digito_verificacion: calcularDV(nit), razon_social: datos.razonSocial||"", nombre: datos.razonSocial||"", direccion: datos.direccion||"", telefono: datos.telefono||"", celular: "", email: datos.email||"", ciudad: datos.ciudad||"", departamento: datos.departamento||"", pais: "Colombia", persona: persona === "juridica" ? "Jurídica" : "Natural", regimen, es_cliente: false, es_proveedor: true, es_empleado: false, gran_contribuyente: tlc.includes("O-13"), autoretenedor: esAutorretenedor, agente_retencion_iva: tlc.includes("O-15"), del_exterior: false };
+  const schemeID = datos.schemeID || "31";
+  const tipo_doc = schemeID==="31"?"NIT":schemeID==="91"?"NIT":schemeID==="13"?"CC":schemeID==="22"?"CE":schemeID==="41"?"PA":"NIT";
+  const esNatural = persona !== "juridica";
+  const rs = (datos.razonSocial || "").toUpperCase().trim();
+  const nombresNat = esNatural ? separarNombreNatural(rs) : {};
+  const nombre_completo = esNatural
+    ? construirNombreCompleto(nombresNat.primer_apellido, nombresNat.segundo_apellido, nombresNat.primer_nombre, nombresNat.otros_nombres)
+    : rs;
+  const ciudadRaw = (datos.ciudad || "").toUpperCase().trim();
+  const municipio_codigo = DIVIPOLA_QUICK[ciudadRaw] || "";
+  return {
+    id: Math.random().toString(36).slice(2) + Date.now().toString(36),
+    empresa_id: empresaId,
+    tipo_persona: esNatural ? "Natural" : "Jurídica",
+    tipo_doc, numero: nit, dv: calcularDV(nit),
+    primer_apellido:  esNatural ? (nombresNat.primer_apellido  || "") : "",
+    segundo_apellido: esNatural ? (nombresNat.segundo_apellido || "") : "",
+    primer_nombre:    esNatural ? (nombresNat.primer_nombre    || "") : "",
+    otros_nombres:    esNatural ? (nombresNat.otros_nombres    || "") : "",
+    nombre_completo, razon_social: esNatural ? nombre_completo : rs, nombre_comercial: "",
+    municipio_codigo, municipio_nombre: ciudadRaw,
+    departamento_nombre: (datos.departamento || "").toUpperCase().trim(),
+    departamento_codigo: municipio_codigo ? municipio_codigo.slice(0, 2) : "",
+    codigo_divipola: municipio_codigo, pais: "CO",
+    direccion: (datos.direccion || "").toUpperCase().trim(),
+    correo_principal: datos.email || "", correo_facturacion: datos.email || "",
+    celular: datos.celular || "", telefono: datos.telefono || "",
+    regimen,
+    responsable_iva: !tlc.includes("O-48") && !tlc.includes("R-99"),
+    gran_contribuyente: tlc.includes("O-13"),
+    autorretenedor: esAutorretenedor,
+    agente_retencion_iva: tlc.includes("O-15"),
+    responsabilidades_dian: datos.taxLevelCode || "",
+    ciiu_principal: "",
+    tipos: ["Proveedor"], es_cliente: false, es_proveedor: true, es_empleado: false, estado: "activo",
+  };
 }
 
 async function upsertTerceroSB(tercero) {
