@@ -52,7 +52,7 @@ function dianRequest(path, cookies, method, bodyStr, host) {
       stream.on("error", reject);
     });
     req.on("error", reject);
-    req.setTimeout(30000, () => { req.destroy(); reject(new Error("Timeout DIAN")); });
+    req.setTimeout(25000, () => { req.destroy(); reject(new Error("Timeout DIAN")); });
     if (bodyBuf) req.write(bodyBuf);
     req.end();
   });
@@ -195,6 +195,10 @@ exports.handler = async (event) => {
 
   const { action } = body;
 
+  // Netlify Free = 26s max — wrappear acciones lentas
+  const TIMEOUT_MS = 24000;
+  const timeoutPromise = new Promise((_,rej) => setTimeout(()=>rej(new Error("Tiempo agotado — intenta con un rango de fechas más corto")), TIMEOUT_MS));
+
   try {
 
     // ── AUTH ──────────────────────────────────────────────────────────────────
@@ -267,7 +271,7 @@ exports.handler = async (event) => {
       const formBody = [
         "draw=1",
         "start=0",
-        "length=500",       // traer hasta 500 facturas
+        "length=100",       // traer hasta 100 facturas por lote (más rápido)
         "DocumentKey=",
         "SerieAndNumber=",
         "SenderCode=",
@@ -283,7 +287,10 @@ exports.handler = async (event) => {
         "__RequestVerificationToken=" + encodeURIComponent(rvt),
       ].join("&");
 
-      const result = await dianRequest("/Document/GetDocumentsPageToken", newCookies, "POST", formBody, dianHost);
+      const result = await Promise.race([
+        dianRequest("/Document/GetDocumentsPageToken", newCookies, "POST", formBody, dianHost),
+        timeoutPromise
+      ]);
       const finalCookies = mergeCookies(newCookies, result.cookies);
 
       // Parsear el JSON de respuesta
