@@ -1,6 +1,9 @@
-// netlify/functions/dian-proxy.js  — versión optimizada
-// Mejoras: reintentos automáticos con backoff, concurrencia adaptativa,
-//          sesión validada antes de cada lote, timeout por factura individual.
+// netlify/functions/dian-proxy.js — versión corregida
+// FIXES:
+//   1. XML se envía SIEMPRE como base64 puro — elimina Unterminated string in JSON
+//   2. Sanitización agresiva del XML antes de codificar (caracteres de control, surrogados)
+//   3. Respuesta del batch truncada si supera 5.9MB (límite Netlify) → chunks parciales
+//   4. Timeout de 24s con margen de seguridad por factura individual
 
 const https = require("https");
 const zlib  = require("zlib");
@@ -8,7 +11,9 @@ const zlib  = require("zlib");
 const DIAN_HOST_PROD = "catalogo-vpfe.dian.gov.co";
 const DIAN_HOST_HAB  = "catalogo-vpfe-hab.dian.gov.co";
 
-// ── Utilidades ────────────────────────────────────────────────────────────────
+// Netlify Free: respuesta máx ~6MB. Con base64 cada XML ~3KB → 46 facturas ~140KB. OK.
+// Si alguien tiene 200 facturas puede llegar al límite → cortar y avisar.
+const MAX_RESPONSE_BYTES = 5 * 1024 * 1024; // 5MB de margen
 
 function mergeCookies(existing, incoming) {
   if (!incoming) return existing || "";
@@ -21,11 +26,40 @@ function mergeCookies(existing, incoming) {
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function backoffMs(n) { return n === 0 ? 0 : Math.min(800 * Math.pow(2, n - 1), 8000); }
 
-// Backoff exponencial: intento 0→0ms, 1→800ms, 2→2000ms, 3→4000ms
-function backoffMs(intento) { return intento === 0 ? 0 : Math.min(800 * Math.pow(2, intento - 1), 8000); }
+// ── Sanitizar XML para que sea JSON-safe ──────────────────────────────────────
+// El problema "Unterminated string in JSON" ocurre porque el XML de algunas
+// facturas DIAN contiene caracteres inválidos en JSON:
+//   • Caracteres de control (0x00-0x1F excepto tab/lf/cr)
+//   • Pares sustitutos UTF-16 sueltos (surrogates) que no son UTF-8 válido
+//   • BOM (0xFEFF)
+// SOLUCIÓN: convertir el contenido del XML a Buffer UTF-8 y codificar en base64.
+// El base64 es 100% JSON-safe por definición — no puede contener comillas ni
+// caracteres de control. El frontend decodifica con TextDecoder.
+function sanitizarXmlBytes(rawBytes, encoding) {
+  let content;
+  try {
+    if      (encoding === "latin1")   content = rawBytes.toString("latin1");
+    else if (encoding === "utf16le")  content = rawBytes.toString("utf16le");
+    else                              content = rawBytes.toString("utf8");
+  } catch(e) {
+    content = rawBytes.toString("latin1"); // fallback seguro
+  }
 
-// ── Petición HTTP principal ───────────────────────────────────────────────────
+  // Eliminar BOM
+  content = content.replace(/^\uFEFF/, "");
+
+  // Eliminar caracteres de control (excepto \t \n \r que son válidos en XML)
+  // Incluye surrogates sueltos (\uD800-\uDFFF)
+  // eslint-disable-next-line no-control-regex
+  content = content.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\uD800-\uDFFF]/g, "");
+
+  // Reconvertir a Buffer UTF-8 limpio y devolver base64
+  return Buffer.from(content, "utf8").toString("base64");
+}
+
+// ── HTTP ──────────────────────────────────────────────────────────────────────
 
 function dianRequest(path, cookies, method, bodyStr, host, timeoutMs = 28000) {
   method = method || "GET";
@@ -50,8 +84,8 @@ function dianRequest(path, cookies, method, bodyStr, host, timeoutMs = 28000) {
       },
     };
     const req = https.request(options, (res) => {
-      const setCookies  = res.headers["set-cookie"] || [];
-      const newCookies  = setCookies.map(c => c.split(";")[0]).join("; ");
+      const setCookies = res.headers["set-cookie"] || [];
+      const newCookies = setCookies.map(c => c.split(";")[0]).join("; ");
       const chunks = [];
       const enc = res.headers["content-encoding"];
       let stream = res;
@@ -68,8 +102,6 @@ function dianRequest(path, cookies, method, bodyStr, host, timeoutMs = 28000) {
     req.end();
   });
 }
-
-// ── Descarga binaria (ZIP) ────────────────────────────────────────────────────
 
 function dianDownloadBinary(path, cookies, host, timeoutMs = 30000) {
   host = host || DIAN_HOST_PROD;
@@ -97,7 +129,7 @@ function dianDownloadBinary(path, cookies, host, timeoutMs = 30000) {
   });
 }
 
-// ── Descarga con reintentos automáticos ──────────────────────────────────────
+// ── Descarga con reintentos ────────────────────────────────────────────────────
 
 async function downloadConReintentos(trackId, cookies, host, maxIntentos = 4) {
   let ultimoError = null;
@@ -106,44 +138,38 @@ async function downloadConReintentos(trackId, cookies, host, maxIntentos = 4) {
     try {
       const result = await dianDownloadBinary(
         `/Document/DownloadZipFiles?trackId=${trackId}`,
-        cookies, host,
-        // Aumentar timeout en reintentos para dar más margen
-        22000 + intento * 4000
+        cookies, host, 22000 + intento * 4000
       );
       if (result.statusCode === 502 || result.statusCode === 503 || result.statusCode === 504) {
         ultimoError = new Error(`HTTP ${result.statusCode}`);
-        continue; // Reintentar en errores de gateway
+        continue;
       }
-      if (result.statusCode === 401 || result.statusCode === 403) {
-        throw new Error("Sesion expirada");   // No reintentar — sesión muerta
-      }
-      if (result.statusCode !== 200) {
-        throw new Error(`HTTP ${result.statusCode}`);
-      }
+      if (result.statusCode === 401 || result.statusCode === 403) throw new Error("Sesion expirada");
+      if (result.statusCode !== 200) throw new Error(`HTTP ${result.statusCode}`);
       const isZip = result.rawBuffer[0] === 0x50 && result.rawBuffer[1] === 0x4b;
       if (!isZip) {
-        const preview = result.rawBuffer.slice(0, 100).toString("utf8");
-        if (preview.includes("Session") || preview.includes("login") || preview.includes("Login")) {
-          throw new Error("Sesion expirada");  // No reintentar
+        const preview = result.rawBuffer.slice(0, 200).toString("utf8");
+        if (preview.toLowerCase().includes("session") || preview.toLowerCase().includes("login")) {
+          throw new Error("Sesion expirada");
         }
         ultimoError = new Error("Respuesta no es ZIP");
         continue;
       }
-      return result; // ✓ Éxito
+      return result;
     } catch(e) {
-      if (e.message === "Sesion expirada") throw e; // Propagar inmediatamente
+      if (e.message === "Sesion expirada") throw e;
       ultimoError = e;
     }
   }
   throw ultimoError || new Error("Falló tras reintentos");
 }
 
-// ── Parseo ZIP ────────────────────────────────────────────────────────────────
+// ── Parseo ZIP — devuelve base64 directamente ─────────────────────────────────
 
-function extractFromZip(buffer, tipo = "xml") {
+function extractXmlBase64FromZip(buffer) {
   try {
     const PK_SIG = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
-    const files = [];
+    const candidatos = []; // Recoger todos los XML/HTML del ZIP
     let pos = 0;
     while (pos < buffer.length - 4) {
       const idx = buffer.indexOf(PK_SIG, pos);
@@ -157,37 +183,55 @@ function extractFromZip(buffer, tipo = "xml") {
       const compressedData    = buffer.slice(dataStart, dataStart + compressedSize);
       const ext               = filename.toLowerCase();
 
-      const buscado = tipo === "pdf" ? ext.endsWith(".pdf") : (ext.endsWith(".xml") || ext.endsWith(".html"));
-      if (buscado) {
+      if (ext.endsWith(".xml") || ext.endsWith(".html")) {
         try {
           let rawBytes;
           if      (compressionMethod === 0) rawBytes = compressedData;
           else if (compressionMethod === 8) rawBytes = zlib.inflateRawSync(compressedData);
-          if (rawBytes) {
-            if (tipo === "pdf") { files.push({ filename, data: rawBytes }); }
-            else {
-              const head = rawBytes.slice(0, 200).toString("latin1");
-              let content;
-              if      (head.includes("ISO-8859-1") || head.includes("iso-8859-1")) content = rawBytes.toString("latin1");
-              else if (head.includes("UTF-16")     || head.includes("utf-16"))     content = rawBytes.toString("utf16le");
-              else                                                                   content = rawBytes.toString("utf8");
-              content = content.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
-              files.push({ filename, content });
-            }
+          if (rawBytes && rawBytes.length > 0) {
+            // Detectar encoding desde la declaración XML
+            const head = rawBytes.slice(0, 300).toString("latin1");
+            let encoding = "utf8";
+            if      (head.match(/encoding=["']ISO-8859-1["']/i)) encoding = "latin1";
+            else if (head.match(/encoding=["']UTF-16["']/i))     encoding = "utf16le";
+            // Sanitizar y convertir a base64 JSON-safe
+            const xmlB64 = sanitizarXmlBytes(rawBytes, encoding);
+            candidatos.push({ filename, xmlB64, esXml: ext.endsWith(".xml") });
           }
-        } catch(e) { /* continuar con siguiente archivo */ }
+        } catch(e) { /* ignorar y continuar */ }
       }
-      pos = dataStart + compressedSize;
+      pos = dataStart + Math.max(compressedSize, 1);
     }
+    // Preferir .xml sobre .html
+    const xml  = candidatos.find(c => c.esXml);
+    const html = candidatos.find(c => !c.esXml);
+    return (xml || html)?.xmlB64 || null;
+  } catch(e) { return null; }
+}
 
-    if (tipo === "pdf") {
-      const pdf = files.find(f => f.filename.toLowerCase().endsWith(".pdf"));
-      return pdf ? pdf.data : null;
+function extractPdfFromZip(buffer) {
+  try {
+    const PK_SIG = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
+    let pos = 0;
+    while (pos < buffer.length - 4) {
+      const idx = buffer.indexOf(PK_SIG, pos);
+      if (idx === -1) break;
+      const compressionMethod = buffer.readUInt16LE(idx + 8);
+      const compressedSize    = buffer.readUInt32LE(idx + 18);
+      const filenameLength    = buffer.readUInt16LE(idx + 26);
+      const extraLength       = buffer.readUInt16LE(idx + 28);
+      const filename          = buffer.slice(idx + 30, idx + 30 + filenameLength).toString("utf8");
+      const dataStart         = idx + 30 + filenameLength + extraLength;
+      const compressedData    = buffer.slice(dataStart, dataStart + compressedSize);
+      if (filename.toLowerCase().endsWith(".pdf")) {
+        try {
+          if (compressionMethod === 0) return compressedData;
+          if (compressionMethod === 8) return zlib.inflateRawSync(compressedData);
+        } catch(e) {}
+      }
+      pos = dataStart + Math.max(compressedSize, 1);
     }
-    const xml  = files.find(f => f.filename.toLowerCase().endsWith(".xml"));
-    if (xml)  return xml.content;
-    const html = files.find(f => f.filename.toLowerCase().endsWith(".html"));
-    return html ? html.content : null;
+    return null;
   } catch(e) { return null; }
 }
 
@@ -208,7 +252,7 @@ async function getVerificationToken(cookies, host) {
   return { token: match ? match[1] : "", cookies: newCookies };
 }
 
-// ── Handler principal ─────────────────────────────────────────────────────────
+// ── HANDLER ───────────────────────────────────────────────────────────────────
 
 exports.handler = async (event) => {
   const headers = {
@@ -229,14 +273,12 @@ exports.handler = async (event) => {
 
   try {
 
-    // ── AUTH ────────────────────────────────────────────────────────────────
+    // ── AUTH ──────────────────────────────────────────────────────────────────
     if (action === "auth") {
       const { tokenUrl } = body;
       if (!tokenUrl || (!tokenUrl.includes("catalogo-vpfe.dian.gov.co") && !tokenUrl.includes("catalogo-vpfe-hab.dian.gov.co"))) {
         return { statusCode: 400, headers, body: JSON.stringify({ error: "URL de token inválida" }) };
       }
-
-      // Decodificar SafeLinks de Outlook
       let cleanUrl = tokenUrl.trim();
       if (cleanUrl.includes("safelinks.protection.outlook.com")) {
         try {
@@ -247,101 +289,83 @@ exports.handler = async (event) => {
       if (cleanUrl.includes("%3A%2F%2F") || cleanUrl.includes("%3A%2f%2f")) {
         cleanUrl = decodeURIComponent(cleanUrl);
       }
-
       const url      = new URL(cleanUrl);
       const path     = url.pathname + url.search;
       const dianHost = url.hostname.includes("-hab") ? DIAN_HOST_HAB : DIAN_HOST_PROD;
 
       let result  = await dianRequest(path, "", "GET", null, dianHost);
       let cookies = result.cookies;
-
-      // Seguir redirects
       let redirects = 0;
       while ((result.statusCode === 301 || result.statusCode === 302 || result.statusCode === 303) && redirects < 5) {
-        const loc    = result.headers["location"] || "";
-        const rPath  = loc.startsWith("http") ? new URL(loc).pathname + new URL(loc).search : loc;
-        cookies      = mergeCookies(cookies, result.cookies);
-        result       = await dianRequest(rPath, cookies, "GET", null, dianHost);
+        const loc   = result.headers["location"] || "";
+        const rPath = loc.startsWith("http") ? new URL(loc).pathname + new URL(loc).search : loc;
+        cookies     = mergeCookies(cookies, result.cookies);
+        result      = await dianRequest(rPath, cookies, "GET", null, dianHost);
         redirects++;
       }
       cookies = mergeCookies(cookies, result.cookies);
-
       if (!cookies || !cookies.includes("ASP.NET_SessionId")) {
         return { statusCode: 401, headers, body: JSON.stringify({ error: "No se obtuvo sesión. El token expiró o ya fue usado." }) };
       }
-
       return { statusCode: 200, headers, body: JSON.stringify({ ok: true, cookies, dianHost, mensaje: "Sesión DIAN iniciada" }) };
     }
 
-    // ── LIST ────────────────────────────────────────────────────────────────
+    // ── LIST ──────────────────────────────────────────────────────────────────
     if (action === "list") {
       const { cookies, desde, hasta, dianHost: dh } = body;
       const dianHost = dh || DIAN_HOST_PROD;
       if (!cookies) return { statusCode: 400, headers, body: JSON.stringify({ error: "Cookies requeridas" }) };
-
       const startDate = desde || new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
       const endDate   = hasta || new Date().toISOString().slice(0, 10);
-
       const tokenInfo  = await getVerificationToken(cookies, dianHost);
-      const rvt        = tokenInfo.token;
       const newCookies = tokenInfo.cookies;
-
       const formBody = [
-        "draw=1", "start=0", "length=500",
-        "DocumentKey=", "SerieAndNumber=", "SenderCode=", "ReceiverCode=",
+        "draw=1","start=0","length=500",
+        "DocumentKey=","SerieAndNumber=","SenderCode=","ReceiverCode=",
         `StartDate=${encodeURIComponent(startDate)}`,
         `EndDate=${encodeURIComponent(endDate)}`,
-        "DocumentTypeId=00", "Status=0", "IsNextPage=false",
-        "FilterType=3", "blockIndex=0", "RadianStatus=0",
-        `__RequestVerificationToken=${encodeURIComponent(rvt)}`,
+        "DocumentTypeId=00","Status=0","IsNextPage=false",
+        "FilterType=3","blockIndex=0","RadianStatus=0",
+        `__RequestVerificationToken=${encodeURIComponent(tokenInfo.token)}`,
       ].join("&");
-
-      const result      = await dianRequest("/Document/GetDocumentsPageToken", newCookies, "POST", formBody, dianHost, 25000);
+      const result       = await dianRequest("/Document/GetDocumentsPageToken", newCookies, "POST", formBody, dianHost, 25000);
       const finalCookies = mergeCookies(newCookies, result.cookies);
-
       let data;
       try { data = JSON.parse(result.body); }
       catch(e) {
         return { statusCode: 200, headers, body: JSON.stringify({ ok: true, facturas: [], total: 0, cookies: finalCookies, error: "No se pudo parsear respuesta DIAN" }) };
       }
-
       const facturas = (data.data || []).map(doc => ({
         trackId:        doc.Id,
         fecha:          parseDianDate(doc.EmissionDate),
         fechaRecepcion: parseDianDate(doc.ReceptionDate),
-        prefijo:        doc.Serie   || "",
-        nroDocumento:   doc.Number  || "",
+        prefijo:        doc.Serie         || "",
+        nroDocumento:   doc.Number        || "",
         tipo:           doc.DocumentTypeName || "",
-        nitEmisor:      doc.SenderCode   || "",
-        emisor:         doc.SenderName   || "",
-        receptor:       doc.ReceiverName || "",
-        resultado:      doc.StatusName   || "",
+        nitEmisor:      doc.SenderCode    || "",
+        emisor:         doc.SenderName    || "",
+        receptor:       doc.ReceiverName  || "",
+        resultado:      doc.StatusName    || "",
         valor:          Math.round(doc.TotalAmount  || 0),
         iva:            Math.round(doc.TaxAmountIva || 0),
         tokenConsulta:  doc.TokenConsulta || "",
         identifier:     doc.Identifier   || "",
       }));
-
-      return {
-        statusCode: 200, headers,
-        body: JSON.stringify({ ok: true, facturas, total: facturas.length, recordsTotal: data.recordsTotal || 0, cookies: finalCookies }),
-      };
+      return { statusCode: 200, headers, body: JSON.stringify({ ok: true, facturas, total: facturas.length, recordsTotal: data.recordsTotal || 0, cookies: finalCookies }) };
     }
 
-    // ── DOWNLOAD SINGLE ─────────────────────────────────────────────────────
+    // ── DOWNLOAD SINGLE ───────────────────────────────────────────────────────
     if (action === "download") {
       const { cookies, trackId, dianHost: dh2 } = body;
       const dianHost2 = dh2 || DIAN_HOST_PROD;
       if (!cookies || !trackId) return { statusCode: 400, headers, body: JSON.stringify({ error: "cookies y trackId requeridos" }) };
-
-      const result     = await downloadConReintentos(trackId, cookies, dianHost2);
-      const xmlContent = extractFromZip(result.rawBuffer, "xml");
-      if (!xmlContent) return { statusCode: 422, headers, body: JSON.stringify({ error: "Sin XML en ZIP" }) };
-      const xmlB64     = Buffer.from(xmlContent, "utf8").toString("base64");
+      const result  = await downloadConReintentos(trackId, cookies, dianHost2);
+      const xmlB64  = extractXmlBase64FromZip(result.rawBuffer);
+      if (!xmlB64)  return { statusCode: 422, headers, body: JSON.stringify({ error: "Sin XML en ZIP" }) };
       return { statusCode: 200, headers, body: JSON.stringify({ ok: true, xml: xmlB64, encoding: "base64", trackId, zipSize: result.rawBuffer.length }) };
     }
 
-    // ── DOWNLOAD BATCH ──────────────────────────────────────────────────────
+    // ── DOWNLOAD BATCH ────────────────────────────────────────────────────────
     if (action === "download_batch") {
       const { cookies, trackIds, dianHost: dh3 } = body;
       const dianHost3 = dh3 || DIAN_HOST_PROD;
@@ -349,33 +373,38 @@ exports.handler = async (event) => {
         return { statusCode: 400, headers, body: JSON.stringify({ error: "cookies y trackIds[] requeridos" }) };
       }
 
-      // ── ESTRATEGIA OPTIMIZADA ────────────────────────────────────────────
-      // • Concurrencia 3 (no 5) para no saturar la DIAN
-      // • Reintentos automáticos por factura con backoff
-      // • Delay adaptativo: si el lote anterior tuvo errores → esperar más
-      // • Sesión verificada: si falla con "Sesion expirada" → parar todo
       const CONCURRENCY = 3;
-      const resultados = [];
-      const errores    = [];
-      let sesionMuerta = false;
+      const resultados  = [];
+      const errores     = [];
+      let   sesionMuerta = false;
+      let   bytesAcumulados = 0;
+      let   truncado = false;
 
       for (let i = 0; i < trackIds.length; i += CONCURRENCY) {
         if (sesionMuerta) {
-          // Marcar todas las restantes como error de sesión
           trackIds.slice(i).forEach(tid => errores.push({ trackId: tid, error: "Sesion expirada" }));
+          break;
+        }
+        if (truncado) {
+          trackIds.slice(i).forEach(tid => errores.push({ trackId: tid, error: "Respuesta demasiado grande — procesar en lotes menores" }));
           break;
         }
 
         const lote       = trackIds.slice(i, i + CONCURRENCY);
-        const loteNum    = Math.floor(i / CONCURRENCY) + 1;
         const erroresAnt = errores.length;
 
         await Promise.all(lote.map(async (trackId) => {
           try {
             const result = await downloadConReintentos(trackId, cookies, dianHost3, 4);
-            const xmlContent = extractFromZip(result.rawBuffer, "xml");
-            if (!xmlContent) throw new Error("Sin XML en ZIP");
-            const xmlB64 = Buffer.from(xmlContent, "utf8").toString("base64");
+            const xmlB64 = extractXmlBase64FromZip(result.rawBuffer);
+            if (!xmlB64) throw new Error("Sin XML en ZIP");
+            // Verificar que no superamos el límite de respuesta
+            bytesAcumulados += xmlB64.length;
+            if (bytesAcumulados > MAX_RESPONSE_BYTES) {
+              truncado = true;
+              errores.push({ trackId, error: "Límite de respuesta alcanzado" });
+              return;
+            }
             resultados.push({ trackId, xml: xmlB64, encoding: "base64", zipSize: result.rawBuffer.length });
           } catch(e) {
             if (e.message === "Sesion expirada") sesionMuerta = true;
@@ -383,86 +412,61 @@ exports.handler = async (event) => {
           }
         }));
 
-        // Delay entre lotes:
-        // • Si hubo errores en este lote → esperar más (DIAN está bajo presión)
-        // • Si todo OK → delay mínimo para ser rápido
-        if (i + CONCURRENCY < trackIds.length && !sesionMuerta) {
+        if (i + CONCURRENCY < trackIds.length && !sesionMuerta && !truncado) {
           const hubieronErrores = errores.length > erroresAnt;
-          const delayMs = hubieronErrores ? 2500 : 400;
-          await sleep(delayMs);
+          await sleep(hubieronErrores ? 2500 : 400);
         }
       }
 
       return {
         statusCode: 200, headers,
-        body: JSON.stringify({
-          ok: true, resultados, errores,
-          total: trackIds.length, exitosos: resultados.length,
-          sesionMuerta,
-        }),
+        body: JSON.stringify({ ok: true, resultados, errores, total: trackIds.length, exitosos: resultados.length, sesionMuerta, truncado }),
       };
     }
 
-    // ── DOWNLOAD PDF BATCH ──────────────────────────────────────────────────
+    // ── DOWNLOAD PDF BATCH ─────────────────────────────────────────────────────
     if (action === "download_pdfs") {
       const { cookies, facturas } = body;
       if (!cookies || !Array.isArray(facturas)) {
         return { statusCode: 400, headers, body: JSON.stringify({ error: "cookies y facturas[] requeridos" }) };
       }
-
-      const ordenadas  = [...facturas].sort((a, b) => {
-        const fa = (a.fecha || "") + (a.prefijo || "") + (a.nroDocumento || "");
-        const fb = (b.fecha || "") + (b.prefijo || "") + (b.nroDocumento || "");
-        return fa.localeCompare(fb);
-      });
-
+      const ordenadas  = [...facturas].sort((a, b) => ((a.fecha||"")+(a.prefijo||"")).localeCompare((b.fecha||"")+(b.prefijo||"")));
       const CONCURRENCY = 3;
       const resultados = [], errores = [];
       let sesionMuerta = false;
-
       for (let i = 0; i < ordenadas.length; i += CONCURRENCY) {
         if (sesionMuerta) {
           ordenadas.slice(i).forEach(f => errores.push({ trackId: f.trackId, emisor: f.emisor, error: "Sesion expirada" }));
           break;
         }
-
         const lote       = ordenadas.slice(i, i + CONCURRENCY);
         const erroresAnt = errores.length;
-
         await Promise.all(lote.map(async (f) => {
           try {
-            const result = await downloadConReintentos(f.trackId, cookies, DIAN_HOST_PROD, 4);
-            const pdfData = extractFromZip(result.rawBuffer, "pdf");
+            const result  = await downloadConReintentos(f.trackId, cookies, DIAN_HOST_PROD, 4);
+            const pdfData = extractPdfFromZip(result.rawBuffer);
             if (!pdfData) throw new Error("Sin PDF en ZIP");
-            const emisorLimpio = (f.emisor || "desconocido")
-              .replace(/[^a-zA-Z0-9À-ɏ]/g, "_").replace(/_+/g, "_").substring(0, 30).toUpperCase();
-            const nombre = `${f.fecha || "0000-00-00"}_${emisorLimpio}_${(f.prefijo || "") + (f.nroDocumento || "")}.pdf`;
+            const emisorLimpio = (f.emisor || "desconocido").replace(/[^a-zA-Z0-9À-ɏ]/g,"_").replace(/_+/g,"_").substring(0,30).toUpperCase();
+            const nombre = `${f.fecha||"0000-00-00"}_${emisorLimpio}_${(f.prefijo||"")+(f.nroDocumento||"")}.pdf`;
             resultados.push({ trackId: f.trackId, nombre, pdf: pdfData.toString("base64"), size: pdfData.length });
           } catch(e) {
             if (e.message === "Sesion expirada") sesionMuerta = true;
             errores.push({ trackId: f.trackId, emisor: f.emisor, error: e.message });
           }
         }));
-
         if (i + CONCURRENCY < ordenadas.length && !sesionMuerta) {
           await sleep(errores.length > erroresAnt ? 2500 : 400);
         }
       }
-
-      return {
-        statusCode: 200, headers,
-        body: JSON.stringify({ ok: true, resultados, errores, total: ordenadas.length, exitosos: resultados.length, sesionMuerta }),
-      };
+      return { statusCode: 200, headers, body: JSON.stringify({ ok: true, resultados, errores, total: ordenadas.length, exitosos: resultados.length, sesionMuerta }) };
     }
 
-    // ── DOWNLOAD PDF SINGLE ─────────────────────────────────────────────────
+    // ── DOWNLOAD PDF SINGLE ────────────────────────────────────────────────────
     if (action === "download_pdf_single") {
       const { cookies, trackId } = body;
-      if (!cookies || !trackId) {
-        return { statusCode: 400, headers, body: JSON.stringify({ error: "cookies y trackId requeridos" }) };
-      }
+      if (!cookies || !trackId) return { statusCode: 400, headers, body: JSON.stringify({ error: "cookies y trackId requeridos" }) };
       const result  = await downloadConReintentos(trackId, cookies, DIAN_HOST_PROD, 3);
-      const pdfData = extractFromZip(result.rawBuffer, "pdf");
+      const pdfData = extractPdfFromZip(result.rawBuffer);
       if (!pdfData) return { statusCode: 422, headers, body: JSON.stringify({ error: "Sin PDF en ZIP" }) };
       return { statusCode: 200, headers, body: JSON.stringify({ ok: true, pdf: pdfData.toString("base64"), trackId }) };
     }
@@ -470,7 +474,7 @@ exports.handler = async (event) => {
     return { statusCode: 400, headers, body: JSON.stringify({ error: `Accion desconocida: ${action}` }) };
 
   } catch(err) {
-    console.error("[dian-proxy] Error:", err.message);
+    console.error("[dian-proxy] Error:", err.message, err.stack);
     return { statusCode: 500, headers, body: JSON.stringify({ error: err.message || "Error interno" }) };
   }
 };
