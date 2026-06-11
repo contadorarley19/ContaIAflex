@@ -25,10 +25,6 @@
 <script type="text/babel">
 const { useState, useCallback, useEffect, useRef } = React;
 
-// ── TABLA DE BASES HISTÓRICAS DE RETENCIÓN ───────────────────────────────────
-// Se carga desde Excel subido por el usuario
-// Formato: concepto | cuenta | tarifa_pct | base_minima_uvt | uvt_anio | fecha_inicio | fecha_fin
-// UVT 2023: $42.412 | UVT 2024: $47.065 | UVT 2025: $49.799
 const UVT_POR_ANIO = { 2022:38004, 2023:42412, 2024:47065, 2025:49799, 2026:52669 };
 
 function getUVT(fecha) {
@@ -37,36 +33,26 @@ function getUVT(fecha) {
 }
 
 function aplicaRetencion(subtotal, fecha, tablaBases, concepto_ia, cuenta_ia) {
-  // Buscar regla vigente para esa fecha y cuenta/concepto
   if (!tablaBases || !tablaBases.length) return { aplica: true, tarifa: null, baseMin: 0, regla: null };
   const fechaDoc = fecha || new Date().toISOString().slice(0,10);
   const uvt = getUVT(fechaDoc);
-
-  // Filtrar reglas vigentes para la fecha
   const vigentes = tablaBases.filter(r => {
     const ini = r.fecha_inicio || '2000-01-01';
     const fin = r.fecha_fin   || '2099-12-31';
-    const cuentaMatch = !r.cuenta || String(r.cuenta) === String(cuenta_ia) || 
+    const cuentaMatch = !r.cuenta || String(r.cuenta) === String(cuenta_ia) ||
                         (r.cuenta && String(cuenta_ia).startsWith(String(r.cuenta).slice(0,4)));
     const conceptoMatch = !r.concepto || (concepto_ia||'').toLowerCase().includes((r.concepto||'').toLowerCase());
     return fechaDoc >= ini && fechaDoc <= fin && (cuentaMatch || conceptoMatch);
   });
-
   if (!vigentes.length) return { aplica: true, tarifa: null, baseMin: 0, regla: null };
-
-  // Tomar la regla más específica (cuenta más larga = más específica)
   vigentes.sort((a,b) => String(b.cuenta||'').length - String(a.cuenta||'').length);
   const regla = vigentes[0];
-
-  // Calcular base mínima en pesos
   const baseMinPesos = regla.base_uvt ? regla.base_uvt * uvt : (regla.base_pesos || 0);
   const tarifa = parseFloat(regla.tarifa_pct) || 0;
   const aplica = subtotal >= baseMinPesos;
-
   return { aplica, tarifa, baseMin: baseMinPesos, regla, uvt };
 }
 
-// ── Supabase ContaFlex ───────────────────────────────────────────
 const SUPA_URL = "https://znqsbadwcfgunwndtswd.supabase.co";
 const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpucXNiYWR3Y2ZndW53bmR0c3dkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgwNDQ0MDAsImV4cCI6MjA5MzYyMDQwMH0.pbzUbObiitXCGrJYazO0SfaQrBchDqIR4_ZgEmjmhZQ";
 const supa = window.supabase ? window.supabase.createClient(SUPA_URL, SUPA_KEY) : null;
@@ -78,7 +64,6 @@ async function getAuxiliaresConTarifa(empresaId) {
 }
 
 async function getEmpresaId() {
-  // Leer sesión de ContaFlex desde localStorage
   try {
     const s = localStorage.getItem('eg_session');
     if (s) { const o=JSON.parse(s); return o.empresaId||null; }
@@ -475,40 +460,32 @@ async function analizarConIA(datos, tratamiento, tratIva) {
     ? `TRATAMIENTO = INVENTARIO: conserva cada ítem por separado. Cuenta principal: 14350501. Una línea por ítem.`
     : `TRATAMIENTO = COSTO/GASTO: resume todos los ítems en UN solo concepto. Cuenta principal 6135x o 613x según tipo.`;
 
-  // Cargar auxiliares completos de la empresa desde Supabase
   let retencionesPrompt = "23654035=2.5% compras | 23652501=1% transporte | 23652504=4% servicios | 23651511=11% honorarios";
-  let pucAuxPrompt = ""; // PUC auxiliares de la empresa para el prompt
+  let pucAuxPrompt = "";
   try {
     const empId = await getEmpresaId();
     if (empId) {
       const auxs = await getAuxiliaresConTarifa(empId);
-      // Retenciones — cuentas 23x con tarifa
       const retAuxs = auxs.filter(a => parseFloat(a.tarifa)>0 && String(a.codigo).startsWith('23'));
       if (retAuxs.length > 0) {
         retencionesPrompt = retAuxs.map(a => a.codigo+'='+a.tarifa+'% '+a.nombre).join(" | ");
-        console.log("Retenciones desde Supabase:", retencionesPrompt);
       }
-      // Auxiliares completos para el prompt — ordenados por código
       if (auxs.length > 0) {
         pucAuxPrompt = auxs
           .sort((a,b)=>String(a.codigo).localeCompare(String(b.codigo)))
           .map(a=>a.codigo+'\t'+a.nombre)
           .join('\n');
-        console.log("Auxiliares empresa cargados:", auxs.length);
       }
     }
   } catch(e) { console.warn("Sin auxiliares Supabase, usando PUC genérico:", e); }
-  // PUC final: SOLO auxiliares de empresa si existen, sino PUC genérico
-  const pucFinal = pucAuxPrompt
-    ? pucAuxPrompt
-    : PUC_EMPRESA;
+
+  const pucFinal = pucAuxPrompt ? pucAuxPrompt : PUC_EMPRESA;
   const instrPUC = pucAuxPrompt
     ? `CUENTAS DE LA EMPRESA — OBLIGATORIO usar SOLO estas cuentas (${pucAuxPrompt.split('\n').length} auxiliares):
 REGLA ESTRICTA: Si la cuenta que necesitas existe en esta lista, DEBES usarla. PROHIBIDO usar otras cuentas.
 Si no encuentras la cuenta exacta, usa la más cercana de esta lista. NUNCA inventes códigos.
 ${pucFinal}`
-    : `PUC ESTÁNDAR:
-${pucFinal}`;
+    : `PUC ESTÁNDAR:\n${pucFinal}`;
 
   const prompt = `Eres contador colombiano experto en PUC. Analiza la factura y devuelve SOLO JSON válido.
 
@@ -523,7 +500,7 @@ ${instrPUC}
 ${instrTratamiento}
 
 RETENCIONES — usa solo cuentas del PUC con sus tarifas parametrizadas:
-\${retencionesPrompt}
+${retencionesPrompt}
 
 IVA:
 ${tratIva==="descontable"
@@ -557,7 +534,6 @@ function generarFilasContables(factura, docNum, config) {
   const { tpcCod, prfCod, ctoCod } = config;
   const fecha = factura.fecha || "";
   const nit   = factura.nitProveedor || "";
-  // DocAux = número de factura del proveedor (prefijo del XML)
   const docAuxReal = factura.prefijo || factura.numeroFactura || config.docAux || "";
   const filas = [];
   const fila = (plnCod, docDet, deb, cre) => ({
@@ -589,34 +565,21 @@ function generarFilasContables(factura, docNum, config) {
 }
 
 function enviarAContaFlex(aprobadas) {
-  // Construir array de comprobantes en formato ContaFlex
   const comprobantes = aprobadas.map(f => {
     const ia = f.ia || {};
     const lineas = [];
-    // Líneas de gasto/costo
     (ia.lineas_contables||[]).forEach(l => {
-      lineas.push({
-        cuenta: l.cuenta_debito_codigo,
-        debito: l.valor_base,
-        credito: 0,
-        detalle: l.descripcion,
-        tercero_nit: f.nitProveedor||'',
-        tercero_nombre: f.razonSocial||''
-      });
+      lineas.push({ cuenta: l.cuenta_debito_codigo, debito: l.valor_base, credito: 0, detalle: l.descripcion, tercero_nit: f.nitProveedor||'', tercero_nombre: f.razonSocial||'' });
     });
-    // IVA
     if (f.totalIva>0 && ia.cuenta_iva_codigo) {
       lineas.push({ cuenta: ia.cuenta_iva_codigo, debito: f.totalIva, credito:0, detalle: ia.cuenta_iva_nombre||'IVA', tercero_nit:f.nitProveedor||'', tercero_nombre:f.razonSocial||'' });
     }
-    // Retención
     const rete = f.esAutorretenedor?0:(f.retefuente||0);
     if (rete>0 && ia.cuenta_retefuente_codigo) {
       lineas.push({ cuenta: ia.cuenta_retefuente_codigo, debito:0, credito: rete, detalle: ia.retefuente_descripcion||'Ret. fuente', tercero_nit:f.nitProveedor||'', tercero_nombre:f.razonSocial||'' });
     }
-    // CxP proveedor
     const neto = (f.total||0) - rete - (f.retica||0);
     lineas.push({ cuenta:'22050101', debito:0, credito: neto, detalle:'CxP '+( f.razonSocial||'').slice(0,40), tercero_nit:f.nitProveedor||'', tercero_nombre:f.razonSocial||'' });
-
     return {
       tipo_doc: 'CO',
       fecha: f.fecha||new Date().toISOString().slice(0,10),
@@ -628,17 +591,15 @@ function enviarAContaFlex(aprobadas) {
       neto_pagar: neto,
       valor_bruto: f.total||0,
       detalles: JSON.stringify(lineas),
-      _lineas: lineas, // para previsualización
+      _lineas: lineas,
       _ia: ia,
     };
   });
-
-  // Guardar en localStorage para que ContaFlex lo lea
   localStorage.setItem('cf_ia_comprobantes', JSON.stringify(comprobantes));
   localStorage.setItem('cf_ia_timestamp', Date.now().toString());
   alert(`✓ ${comprobantes.length} comprobante(s) enviados a ContaFlex.\nVaya a ContaFlex → Causación → botón "📥 Importar desde IA"`);
   console.log('ContaFlex IA comprobantes:', comprobantes);
-  return aprobadas; // retornar para que App actualice estado
+  return aprobadas;
 }
 
 function exportarExcel(facturas, config, soloUna = null) {
@@ -681,7 +642,7 @@ function CeldaEditable({ valor, onChange, tipo="text", style={} }) {
   );
 }
 
-function ModalExport({ facturas, onClose }) {
+function ModalExport({ facturas, tablaBases, inputBasesRef, cargarExcelBases, subidas, guardarSubidas, setFacturas, onClose }) {
   const aprobadas = facturas.filter(f => f.aprobado && !f.error).sort((a, b) => (a.fecha || "").localeCompare(b.fecha || ""));
   const [cfg, setCfg] = useState({ docNumInicio: "1", tpcCod: "CO", prfCod: "", docAux: "", ctoCod: "" });
   const set = (k, v) => setCfg(p => ({ ...p, [k]: v }));
@@ -713,7 +674,7 @@ function ModalExport({ facturas, onClose }) {
           ))}
         </div>
         <div style={{marginBottom:18}}>
-          <div style={{fontSize:11,color:"#64748b",fontWeight:600,textTransform:"uppercase",letterSpacing:".07em",marginBottom:8}}>Vista previa — orden por fecha y consecutivo asignado</div>
+          <div style={{fontSize:11,color:"#64748b",fontWeight:600,textTransform:"uppercase",letterSpacing:".07em",marginBottom:8}}>Vista previa</div>
           <div style={{background:"#0d101a",borderRadius:8,border:"1px solid #1e2235",overflow:"hidden"}}>
             <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
               <thead>
@@ -735,7 +696,7 @@ function ModalExport({ facturas, onClose }) {
                     <td style={{padding:"7px 10px",color:"#4ade80",fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:600}}>${(f.total||0).toLocaleString("es-CO")}</td>
                     <td style={{padding:"7px 10px",color:"#fbbf24",fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:600}}>
                       ${((f.total||0)-(f.retefuente||0)-(f.retica||0)).toLocaleString("es-CO")}
-                      {f.retefuente_aplica&&!f.retefuente_aplica.aplica&&<span title={"No supera base mínima: $"+(f.retefuente_aplica.baseMin||0).toLocaleString("es-CO")} style={{marginLeft:6,fontSize:10,background:"rgba(251,191,36,0.15)",color:"#fbbf24",padding:"1px 5px",borderRadius:4,cursor:"help"}}>sin rete</span>}
+                      {f.retefuente_aplica&&!f.retefuente_aplica.aplica&&<span style={{marginLeft:6,fontSize:10,background:"rgba(251,191,36,0.15)",color:"#fbbf24",padding:"1px 5px",borderRadius:4}}>sin rete</span>}
                     </td>
                   </tr>
                 ))}
@@ -744,7 +705,7 @@ function ModalExport({ facturas, onClose }) {
           </div>
         </div>
         <div style={{borderTop:"1px solid #1e2235",paddingTop:16,display:"flex",gap:10,flexWrap:"wrap",justifyContent:"flex-end"}}>
-          <div style={{fontSize:11,color:"#475569",alignSelf:"center",flex:1}}>Formato CSV · compatible con Excel e importación contable</div>
+          <div style={{fontSize:11,color:"#475569",alignSelf:"center",flex:1}}>Formato CSV · compatible con Excel</div>
           <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:140,overflowY:"auto",border:"1px solid #1e2235",borderRadius:6,padding:"6px 8px",minWidth:200}}>
             <div style={{fontSize:10,color:"#64748b",fontWeight:600,marginBottom:2}}>📄 Descargar por factura:</div>
             {preview.map(f=>(
@@ -761,10 +722,8 @@ function ModalExport({ facturas, onClose }) {
           <button onClick={()=>{
             const enviadas = enviarAContaFlex(aprobadas);
             if(enviadas) {
-              // Mover aprobadas a subidas
               const nuevasSubidas = [...subidas, ...aprobadas.map(f=>({...f,fechaSubida:new Date().toISOString().slice(0,10)}))];
               guardarSubidas(nuevasSubidas);
-              // Quitar aprobadas de facturas pendientes
               setFacturas(p=>p.filter(f=>!f.aprobado||f.error));
             }
           }} disabled={aprobadas.length===0}
@@ -773,18 +732,14 @@ function ModalExport({ facturas, onClose }) {
           </button>
           <div style={{display:"flex",alignItems:"center",gap:8,marginLeft:16,paddingLeft:16,borderLeft:"1px solid #232840"}}>
             <div style={{fontSize:12,color:tablaBases.length?"#4ade80":"#f87171",fontWeight:600}}>
-              {tablaBases.length?"✓ "+tablaBases.length+" reglas de retención":"⚠ Sin bases de retención"}
+              {tablaBases.length?"✓ "+tablaBases.length+" reglas":"⚠ Sin bases"}
             </div>
             <input ref={inputBasesRef} type="file" accept=".xlsx,.xls" onChange={cargarExcelBases} style={{display:"none"}}/>
             <button onClick={()=>inputBasesRef.current?.click()}
               style={{background:"#1e2235",color:"#94a3b8",border:"1px solid #2d3352",borderRadius:8,padding:"6px 14px",cursor:"pointer",fontSize:12,fontWeight:600}}>
-              📋 {tablaBases.length?"Actualizar bases":"Cargar bases retención"}
+              📋 {tablaBases.length?"Actualizar":"Cargar bases"}
             </button>
           </div>
-          <button onClick={()=>enviarAContaFlex(aprobadas)} disabled={aprobadas.length===0}
-            style={{background:aprobadas.length?"#e8b84b":"#1e2235",color:aprobadas.length?"#0f1f3d":"#475569",border:"none",borderRadius:8,padding:"10px 22px",cursor:aprobadas.length?"pointer":"not-allowed",fontSize:13,fontWeight:700,fontFamily:"inherit",marginLeft:8}}>
-            ↗ Enviar a ContaFlex ({aprobadas.length})
-          </button>
         </div>
       </div>
     </div>
@@ -1033,14 +988,11 @@ function TestPanel({ onCargar }) {
 }
 
 function App() {
-  // Facturas en memoria (por aprobar + aprobadas pendientes de subir)
   const [facturas, setFacturas] = useState([]);
-  // Historial de facturas ya subidas a ContaFlex — persiste en localStorage
   const [subidas, setSubidas] = useState(()=>{ try{ return JSON.parse(localStorage.getItem('cf_ia_subidas')||'[]'); }catch(e){return [];} });
   const guardarSubidas = (arr) => { setSubidas(arr); localStorage.setItem('cf_ia_subidas', JSON.stringify(arr)); };
-  const [tabVista, setTabVista] = useState('pendientes'); // 'pendientes' | 'subidas'
+  const [tabVista, setTabVista] = useState('pendientes');
   const [tablaBases, setTablaBases] = useState([]);
-  const [modalBases, setModalBases] = useState(false);
   const [modal, setModal] = useState(null);
   const [procesando, setProcesando] = useState(false);
   const [modalExport, setModalExport] = useState(false);
@@ -1071,14 +1023,12 @@ function App() {
             ...datos, ia,
             retefuente: esAuto?0:(()=>{
               const r = aplicaRetencion(base, datos.fecha, tablaBases, ia.concepto_general, ia.cuenta_retefuente_codigo);
-              if (!r.aplica) return 0; // No supera la base mínima
+              if (!r.aplica) return 0;
               const pct = r.tarifa || ia.retefuente_pct || 0;
               return +(base*(pct/100)).toFixed(0);
             })(),
             retefuente_aplica: !esAuto && aplicaRetencion(base, datos.fecha, tablaBases, ia.concepto_general, ia.cuenta_retefuente_codigo),
             retica: (()=>{
-              const uvt = getUVT(datos.fecha);
-              // ReteICA aplica si supera ~$0 (depende del municipio, sin base mínima DIAN)
               return +(base*(ia.retica_por_mil/1000)).toFixed(0);
             })(),
             esAutorretenedor:esAuto, nombreAutorret:AUTORRETENEDORES[nit]||null,
@@ -1094,40 +1044,38 @@ function App() {
 
   const upd = (id,k,v) => setFacturas(p=>p.map(f=>f.id===id?{...f,[k]:v}:f));
   const aprobadasOrdenadas = [...facturas].filter(f=>f.aprobado&&!f.error).sort((a,b)=>(a.fecha||"").localeCompare(b.fecha||""));
-  const cargarExcelBases = (e) => {
-  const file = e.target.files?.[0]; if (!file) return;
-  const reader = new FileReader();
-  reader.onload = (ev) => {
-    try {
-      const wb = XLSX.read(ev.target.result, {type:'array'});
-      const ws = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(ws, {defval:''});
-      // Normalizar columnas (acepta varios nombres)
-      const norm = rows.map(r => ({
-        concepto:    r.concepto    || r.Concepto    || r.CONCEPTO    || '',
-        cuenta:      String(r.cuenta || r.Cuenta || r.CUENTA || '').trim(),
-        tarifa_pct:  parseFloat(r.tarifa_pct || r.tarifa || r.Tarifa || r['Tarifa%'] || 0),
-        base_uvt:    parseFloat(r.base_uvt   || r.BaseUVT || r['Base UVT'] || 0),
-        base_pesos:  parseFloat(String(r.base_pesos || r.BasePesos || r['Base $'] || 0).replace(/[^0-9.]/g,'')),
-        fecha_inicio: r.fecha_inicio || r.FechaInicio || r.desde || '',
-        fecha_fin:    r.fecha_fin    || r.FechaFin    || r.hasta || '',
-      })).filter(r => r.tarifa_pct > 0);
-      setTablaBases(norm);
-      setModalBases(false);
-      alert('✓ '+norm.length+' reglas de retención cargadas');
-      console.log('Bases cargadas:', norm);
-    } catch(e) { alert('Error leyendo Excel: '+e.message); }
-  };
-  reader.readAsArrayBuffer(file);
-};
 
-const getDocNum = (id) => { const idx=aprobadasOrdenadas.findIndex(f=>f.id===id); return idx===-1?null:(parseInt(cfgExport.docNumInicio)||1)+idx; };
+  const cargarExcelBases = (e) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const wb = XLSX.read(ev.target.result, {type:'array'});
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(ws, {defval:''});
+        const norm = rows.map(r => ({
+          concepto:    r.concepto    || r.Concepto    || r.CONCEPTO    || '',
+          cuenta:      String(r.cuenta || r.Cuenta || r.CUENTA || '').trim(),
+          tarifa_pct:  parseFloat(r.tarifa_pct || r.tarifa || r.Tarifa || r['Tarifa%'] || 0),
+          base_uvt:    parseFloat(r.base_uvt   || r.BaseUVT || r['Base UVT'] || 0),
+          base_pesos:  parseFloat(String(r.base_pesos || r.BasePesos || r['Base $'] || 0).replace(/[^0-9.]/g,'')),
+          fecha_inicio: r.fecha_inicio || r.FechaInicio || r.desde || '',
+          fecha_fin:    r.fecha_fin    || r.FechaFin    || r.hasta || '',
+        })).filter(r => r.tarifa_pct > 0);
+        setTablaBases(norm);
+        alert('✓ '+norm.length+' reglas de retención cargadas');
+      } catch(e) { alert('Error leyendo Excel: '+e.message); }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const getDocNum = (id) => { const idx=aprobadasOrdenadas.findIndex(f=>f.id===id); return idx===-1?null:(parseInt(cfgExport.docNumInicio)||1)+idx; };
   const fmt = n => `$${Number(n||0).toLocaleString("es-CO")}`;
 
   return (
     <div style={{fontFamily:"'IBM Plex Mono','Courier New',monospace",background:"#0f1117",minHeight:"100vh",color:"#e2e8f0"}}>
       {modal&&<ModalTratamiento archivos={modal.archivos} onConfirm={confirmarTratamiento} onCancel={()=>setModal(null)}/>}
-      {modalExport&&<ModalExport facturas={facturas} onClose={()=>setModalExport(false)}/>}
+      {modalExport&&<ModalExport facturas={facturas} tablaBases={tablaBases} inputBasesRef={inputBasesRef} cargarExcelBases={cargarExcelBases} subidas={subidas} guardarSubidas={guardarSubidas} setFacturas={setFacturas} onClose={()=>setModalExport(false)}/>}
       <div style={{background:"#0d101a",borderBottom:"1px solid #1e2235",padding:"12px 24px",display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
         <div style={{display:"flex",alignItems:"center",gap:11}}>
           <div style={{width:32,height:32,background:"linear-gradient(135deg,#4f7cff,#8b5cf6)",borderRadius:7,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>⚡</div>
@@ -1146,7 +1094,6 @@ const getDocNum = (id) => { const idx=aprobadasOrdenadas.findIndex(f=>f.id===id)
         </div>
       </div>
       <div style={{maxWidth:1040,margin:"0 auto",padding:"24px 16px"}}>
-        {/* TABS */}
         {(facturas.length>0||subidas.length>0)&&(
           <div style={{display:'flex',gap:0,borderBottom:'1px solid #1e2235',marginBottom:16}}>
             {[
@@ -1154,10 +1101,7 @@ const getDocNum = (id) => { const idx=aprobadasOrdenadas.findIndex(f=>f.id===id)
               ['subidas','✓ Subidas a ContaFlex',subidas.length],
             ].map(([id,lbl,cnt])=>(
               <button key={id} onClick={()=>setTabVista(id)}
-                style={{padding:'9px 18px',border:'none',background:'transparent',cursor:'pointer',
-                  fontSize:12,fontWeight:500,fontFamily:'inherit',
-                  color:tabVista===id?'#4ade80':'#475569',
-                  borderBottom:tabVista===id?'2px solid #4ade80':'2px solid transparent'}}>
+                style={{padding:'9px 18px',border:'none',background:'transparent',cursor:'pointer',fontSize:12,fontWeight:500,fontFamily:'inherit',color:tabVista===id?'#4ade80':'#475569',borderBottom:tabVista===id?'2px solid #4ade80':'2px solid transparent'}}>
                 {lbl} <span style={{marginLeft:4,background:tabVista===id?'rgba(74,222,128,.15)':'rgba(255,255,255,.06)',color:tabVista===id?'#4ade80':'#475569',borderRadius:20,padding:'1px 7px',fontSize:10,fontWeight:700}}>{cnt}</span>
               </button>
             ))}
@@ -1170,13 +1114,10 @@ const getDocNum = (id) => { const idx=aprobadasOrdenadas.findIndex(f=>f.id===id)
           </div>
         )}
 
-        {/* VISTA SUBIDAS */}
         {tabVista==='subidas'&&(
           <div style={{display:'flex',flexDirection:'column',gap:10}}>
             {subidas.length===0&&(
-              <div style={{textAlign:'center',padding:40,color:'#475569',fontSize:13}}>
-                Sin facturas subidas aún
-              </div>
+              <div style={{textAlign:'center',padding:40,color:'#475569',fontSize:13}}>Sin facturas subidas aún</div>
             )}
             {subidas.map((f,i)=>(
               <div key={f.id+'_'+i} style={{background:'#0f1a0f',border:'1px solid #166534',borderRadius:10,padding:'12px 16px',display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
@@ -1184,13 +1125,12 @@ const getDocNum = (id) => { const idx=aprobadasOrdenadas.findIndex(f=>f.id===id)
                   <span style={{fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:700,color:'#4ade80',fontSize:13}}>{f.razonSocial||f.nitProveedor}</span>
                   <span style={{marginLeft:10,fontFamily:'monospace',color:'#475569',fontSize:11}}>{f.nitProveedor}</span>
                   <div style={{fontSize:11,color:'#475569',marginTop:3}}>
-                    Fecha factura: {f.fecha} · Subida: {f.fechaSubida||'—'} · Total: <span style={{color:'#4ade80',fontWeight:600}}>${(f.total||0).toLocaleString('es-CO')}</span>
+                    Fecha: {f.fecha} · Subida: {f.fechaSubida||'—'} · Total: <span style={{color:'#4ade80',fontWeight:600}}>${(f.total||0).toLocaleString('es-CO')}</span>
                   </div>
                 </div>
                 <div style={{display:'flex',gap:8,alignItems:'center'}}>
                   <span style={{background:'rgba(74,222,128,.1)',color:'#4ade80',border:'1px solid rgba(74,222,128,.2)',borderRadius:20,padding:'2px 10px',fontSize:10,fontWeight:600}}>✓ Subida</span>
                   <button onClick={()=>{
-                    // Restaurar factura para re-procesar
                     const restaurada = {...f, aprobado:false, fechaSubida:undefined};
                     setFacturas(p=>[...p, restaurada]);
                     guardarSubidas(subidas.filter((_,idx)=>idx!==i));
@@ -1205,6 +1145,7 @@ const getDocNum = (id) => { const idx=aprobadasOrdenadas.findIndex(f=>f.id===id)
         )}
 
         {tabVista==='pendientes'&&(
+        <>
         <div className="dz"
           onDragOver={e=>{e.preventDefault();e.currentTarget.classList.add("over")}}
           onDragLeave={e=>e.currentTarget.classList.remove("over")}
@@ -1223,7 +1164,6 @@ const getDocNum = (id) => { const idx=aprobadasOrdenadas.findIndex(f=>f.id===id)
             <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
               <div style={{fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:700,fontSize:14,color:"#fff"}}>Facturas procesadas <span style={{color:"#4f7cff"}}>({facturas.length})</span></div>
             </div>
-            {/* SECCIÓN: Por aprobar */}
             {facturas.filter(f=>!f.aprobado||f.error).length>0&&(
               <div>
                 <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,paddingBottom:6,borderBottom:'1px solid #1e2235'}}>
@@ -1239,7 +1179,6 @@ const getDocNum = (id) => { const idx=aprobadasOrdenadas.findIndex(f=>f.id===id)
                 </div>
               </div>
             )}
-            {/* SECCIÓN: Aprobadas */}
             {aprobadasOrdenadas.length>0&&(
               <div>
                 <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,paddingBottom:6,borderBottom:'1px solid #166534'}}>
@@ -1271,85 +1210,6 @@ const getDocNum = (id) => { const idx=aprobadasOrdenadas.findIndex(f=>f.id===id)
                     </div>
                   ))}
                 </div>
-                {/* RESUMEN POR CUENTA */}
-                {(()=>{
-                  const cuentaMap = {};
-                  aprobadasOrdenadas.forEach(f=>{
-                    const lineas = f.asiento||[];
-                    lineas.forEach(l=>{
-                      if(!l.cuenta) return;
-                      if(!cuentaMap[l.cuenta]) cuentaMap[l.cuenta]={cuenta:l.cuenta,nombre:l.cuentaNombre||l.descripcion||l.cuenta,debito:0,credito:0,facturas:[]};
-                      cuentaMap[l.cuenta].debito += parseFloat(l.tipo==='debito'?l.valor:0)||0;
-                      cuentaMap[l.cuenta].credito += parseFloat(l.tipo==='credito'?l.valor:0)||0;
-                      if(!cuentaMap[l.cuenta].facturas.includes(f.id)) cuentaMap[l.cuenta].facturas.push(f.id);
-                    });
-                  });
-                  const cuentas = Object.values(cuentaMap).sort((a,b)=>a.cuenta.localeCompare(b.cuenta));
-                  if(!cuentas.length) return null;
-                  return (
-                    <div style={{marginTop:14}}>
-                      <div style={{fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:700,fontSize:12,color:'#94a3b8',marginBottom:8,textTransform:'uppercase',letterSpacing:.5}}>
-                        Resumen por cuenta — clic para ver facturas
-                      </div>
-                      <div style={{background:'#0d1520',borderRadius:8,overflow:'hidden',border:'1px solid #1e2a3a'}}>
-                        <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
-                          <thead>
-                            <tr style={{borderBottom:'1px solid #1e2a3a'}}>
-                              {['Cuenta','Nombre','Débito','Crédito','Facturas'].map(h=>(
-                                <th key={h} style={{padding:'7px 12px',textAlign:h==='Cuenta'||h==='Nombre'?'left':'right',fontSize:10,fontWeight:700,color:'#475569',textTransform:'uppercase',letterSpacing:.5}}>{h}</th>
-                              ))}
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {cuentas.map((ct,i)=>(
-                              <tr key={ct.cuenta}
-                                onClick={()=>setCuentaSeleccionada(cuentaSeleccionada===ct.cuenta?null:ct.cuenta)}
-                                style={{borderBottom:'1px solid rgba(30,42,58,.5)',cursor:'pointer',
-                                  background:cuentaSeleccionada===ct.cuenta?'rgba(79,142,247,.08)':'transparent'}}>
-                                <td style={{padding:'7px 12px',fontFamily:'monospace',color:'#e8b84b',fontWeight:600,fontSize:11.5}}>{ct.cuenta}</td>
-                                <td style={{padding:'7px 12px',color:'#94a3b8',maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{ct.nombre}</td>
-                                <td style={{padding:'7px 12px',textAlign:'right',fontFamily:'monospace',color:'#4ade80'}}>{ct.debito>0?fmt(ct.debito):'—'}</td>
-                                <td style={{padding:'7px 12px',textAlign:'right',fontFamily:'monospace',color:'#f87171'}}>{ct.credito>0?fmt(ct.credito):'—'}</td>
-                                <td style={{padding:'7px 12px',textAlign:'right',color:'#64748b',fontSize:11}}>{ct.facturas.length}</td>
-                              </tr>
-                            ))}
-                            {/* Detalle facturas al hacer click */}
-                            {cuentaSeleccionada&&cuentaMap[cuentaSeleccionada]&&(
-                              <tr>
-                                <td colSpan={5} style={{padding:'12px',background:'rgba(79,142,247,.04)',borderTop:'1px solid rgba(79,142,247,.2)'}}>
-                                  <div style={{fontFamily:"'IBM Plex Sans',sans-serif",fontSize:11,fontWeight:700,color:'#4f8ef7',marginBottom:8}}>
-                                    Facturas con cuenta {cuentaSeleccionada}
-                                  </div>
-                                  <div style={{display:'flex',flexDirection:'column',gap:6}}>
-                                    {cuentaMap[cuentaSeleccionada].facturas.map(fid=>{
-                                      const fac = aprobadasOrdenadas.find(f=>f.id===fid);
-                                      if(!fac) return null;
-                                      const linea = (fac.asiento||[]).find(l=>l.cuenta===cuentaSeleccionada);
-                                      return (
-                                        <div key={fid} style={{display:'flex',justifyContent:'space-between',alignItems:'center',background:'#0d1520',borderRadius:6,padding:'7px 10px',border:'1px solid #1e2a3a'}}>
-                                          <div>
-                                            <span style={{fontFamily:'monospace',color:'#4f8ef7',fontSize:11,fontWeight:600}}>{getDocNum(fac.id)||'—'}</span>
-                                            <span style={{marginLeft:8,color:'#64748b',fontSize:11}}>{fac.razonSocial||fac.nitProveedor}</span>
-                                            <span style={{marginLeft:8,color:'#475569',fontSize:10}}>{fac.fecha}</span>
-                                          </div>
-                                          <div style={{display:'flex',gap:12,alignItems:'center'}}>
-                                            {linea?.tipo==='debito'&&<span style={{fontFamily:'monospace',color:'#4ade80',fontSize:11}}>{fmt(linea.valor)}</span>}
-                                            {linea?.tipo==='credito'&&<span style={{fontFamily:'monospace',color:'#f87171',fontSize:11}}>{fmt(linea.valor)}</span>}
-                                            <span style={{fontFamily:'monospace',color:'#94a3b8',fontSize:10}}>{linea?.descripcion||''}</span>
-                                          </div>
-                                        </div>
-                                      );
-                                    })}
-                                  </div>
-                                </td>
-                              </tr>
-                            )}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  );
-                })()}
                 <div style={{display:"flex",justifyContent:"flex-end",marginTop:14}}>
                   <button onClick={()=>setModalExport(true)} style={{background:"#22c55e",color:"#fff",border:"none",borderRadius:7,padding:"9px 22px",cursor:"pointer",fontSize:13,fontWeight:700,fontFamily:"inherit"}}>⬇ Exportar comprobante Excel</button>
                 </div>
@@ -1357,7 +1217,8 @@ const getDocNum = (id) => { const idx=aprobadasOrdenadas.findIndex(f=>f.id===id)
             )}
           </div>
         )}
-        )} {/* fin tab pendientes */}
+        </>
+        )}
       </div>
     </div>
   );
