@@ -114,9 +114,8 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
     addLog(`Consultando facturas del ${fmtFecha(desde)} al ${fmtFecha(hasta)}...`, "info");
     try {
       const res = await dianProxy("list", { cookies, desde, hasta });
-      setCookies(res.cookies || cookies); // actualizar cookies si vienen nuevas
+      setCookies(res.cookies || cookies);
       setFacturas(res.facturas || []);
-      // Seleccionar todas por defecto
       setSeleccion(new Set((res.facturas || []).map(f => f.trackId)));
       addLog(`✓ ${res.total} facturas encontradas`, "ok");
       if (res.total === 0) {
@@ -141,10 +140,11 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
     setError("");
     setProgreso({ actual: 0, total: trackIds.length });
     setPaso("descarga");
-    addLog(`Iniciando descarga de ${trackIds.length} facturas en paralelo...`, "info");
+    addLog(`Iniciando descarga de ${trackIds.length} facturas...`, "info");
 
     const xmlsOk = [];
-    const LOTE   = 5; // 5 simultáneas a la vez
+    // ✅ FIX 1: Bajar concurrencia de 5 a 2 para evitar 403 por rate limiting
+    const LOTE   = 2;
 
     for (let i = 0; i < trackIds.length; i += LOTE) {
       const lote = trackIds.slice(i, i + LOTE);
@@ -153,11 +153,10 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
       try {
         const res = await dianProxy("download_batch", { cookies, trackIds: lote });
 
-        // Procesar exitosos — decodificar base64 si es necesario
+        // Procesar exitosos
         (res.resultados || []).forEach(r => {
           const factura = facturas.find(f => f.trackId === r.trackId);
           const nombre  = `${factura?.emisor?.replace(/[^a-zA-Z0-9]/g, "_") || "factura"}_${r.trackId.slice(0, 8)}.xml`;
-          // Decodificar base64 si el proxy lo envió así
           let contenido = r.xml;
           if (r.encoding === "base64") {
             try { contenido = atob(r.xml); } catch(e) { contenido = r.xml; }
@@ -166,11 +165,27 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
           addLog(`✓ ${factura?.emisor || r.trackId.slice(0, 12)} — ${fmt(factura?.valor)}`, "ok");
         });
 
-        // Reportar errores
-        (res.errores || []).forEach(e => {
+        // ✅ FIX 2: Reintentar errores uno por uno con delay en lugar de solo reportar
+        for (const e of (res.errores || [])) {
           const factura = facturas.find(f => f.trackId === e.trackId);
-          addLog(`⚠ ${factura?.emisor || e.trackId.slice(0, 12)}: ${e.error}`, "warn");
-        });
+          addLog(`↺ Reintentando ${factura?.emisor || e.trackId.slice(0, 12)}...`, "info");
+          await new Promise(r => setTimeout(r, 3000));
+          try {
+            const r2 = await dianProxy("download_batch", { cookies, trackIds: [e.trackId] });
+            if (r2.resultados?.[0]) {
+              const r = r2.resultados[0];
+              const nombre = `${factura?.emisor?.replace(/[^a-zA-Z0-9]/g, "_") || "factura"}_${r.trackId.slice(0, 8)}.xml`;
+              let contenido = r.xml;
+              if (r.encoding === "base64") { try { contenido = atob(r.xml); } catch(e) { contenido = r.xml; } }
+              xmlsOk.push({ nombre, contenido, trackId: r.trackId, factura });
+              addLog(`✓ ${factura?.emisor || r.trackId.slice(0, 12)} — ${fmt(factura?.valor)}`, "ok");
+            } else {
+              addLog(`⚠ ${factura?.emisor || e.trackId.slice(0, 12)}: ${e.error}`, "warn");
+            }
+          } catch(e2) {
+            addLog(`⚠ ${factura?.emisor || e.trackId.slice(0, 12)}: ${e2.message}`, "warn");
+          }
+        }
 
       } catch (e) {
         addLog(`✗ Error en lote: ${e.message}`, "error");
@@ -178,9 +193,9 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
 
       setProgreso({ actual: Math.min(i + LOTE, trackIds.length), total: trackIds.length });
 
-      // Pausa entre lotes
+      // ✅ FIX 3: Aumentar pausa entre lotes de 800ms a 2500ms
       if (i + LOTE < trackIds.length) {
-        await new Promise(r => setTimeout(r, 800));
+        await new Promise(r => setTimeout(r, 2500));
       }
     }
 
@@ -223,7 +238,7 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
     setProgresosPDF({ actual: 0, total: seleccionadas.length });
     addLog(`Preparando ${seleccionadas.length} PDFs + Excel en ZIP por mes...`, "info");
 
-    const archivos = []; // { carpeta, nombre, bytes }
+    const archivos = [];
     let errCount = 0;
 
     for (let i = 0; i < seleccionadas.length; i++) {
@@ -244,7 +259,6 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
       } catch(e) {
         errCount++;
         addLog(`⚠ ${f.emisor || f.trackId.slice(0,8)}: ${e.message}`, "warn");
-        // Agregar al Excel aunque falle el PDF
         const mes = (f.fecha || "0000-00").slice(0, 7);
         archivos.push({ carpeta: mes + "/", nombre: null, bytes: null, factura: f });
       }
@@ -253,7 +267,6 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
     addLog(`─── Armando ZIP con carpetas y Excel... ───`, "info");
 
     try {
-      // Cargar JSZip
       if (!window.JSZip) {
         await new Promise((resolve, reject) => {
           const s = document.createElement("script");
@@ -265,12 +278,10 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
 
       const zip = new window.JSZip();
 
-      // Agregar PDFs en carpetas por mes
       archivos.forEach(({ carpeta, nombre, bytes }) => {
         if (bytes && nombre) zip.folder(carpeta).file(nombre, bytes);
       });
 
-      // Generar Excel con XLSX
       const headers = [
         "Tipo Documento", "CUFE/CUDE", "Folio", "Prefijo", "N° Factura",
         "Fecha Emisión", "Fecha Recepción", "NIT Emisor", "Emisor",
@@ -295,15 +306,12 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
         f.valor || 0,
       ]);
 
-      // Crear hoja Excel con XLSX.js (ya está disponible en ContaIA)
       const wsData = [headers, ...filas];
       const ws = XLSX.utils.aoa_to_sheet(wsData);
-      // Ancho de columnas
       ws["!cols"] = [
         {wch:20},{wch:64},{wch:8},{wch:10},{wch:18},{wch:14},{wch:16},
         {wch:14},{wch:40},{wch:14},{wch:30},{wch:25},{wch:20},{wch:14},{wch:14},
       ];
-      // Formato moneda para IVA y Total
       const fmtPesos = '#,##0';
       filas.forEach((_, i) => {
         const rowIdx = i + 2;
@@ -316,17 +324,15 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
       XLSX.utils.book_append_sheet(wb, ws, "Facturas DIAN");
       const xlsxBytes = XLSX.write(wb, { bookType: "xlsx", type: "array" });
 
-      // Agregar Excel al ZIP en la raíz
-      const desde = seleccionadas[0]?.fecha || "inicio";
-      const hasta = seleccionadas[seleccionadas.length - 1]?.fecha || "fin";
-      zip.file(`resumen_facturas_${desde}_al_${hasta}.xlsx`, xlsxBytes);
+      const desdeStr = seleccionadas[0]?.fecha || "inicio";
+      const hastaStr = seleccionadas[seleccionadas.length - 1]?.fecha || "fin";
+      zip.file(`resumen_facturas_${desdeStr}_al_${hastaStr}.xlsx`, xlsxBytes);
 
-      // Generar y descargar el ZIP
       const zipBlob = await zip.generateAsync({
         type: "blob", compression: "DEFLATE",
         compressionOptions: { level: 6 },
       });
-      const zipNombre = `facturas_DIAN_${desde}_al_${hasta}.zip`;
+      const zipNombre = `facturas_DIAN_${desdeStr}_al_${hastaStr}.zip`;
       const url = URL.createObjectURL(zipBlob);
       const a = document.createElement("a");
       a.href = url; a.download = zipNombre;
@@ -504,7 +510,6 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
           {/* ── PASO LISTA ─────────────────────────────────────────────── */}
           {(paso === "lista" || paso === "descarga" || paso === "listo") && facturas.length > 0 && (
             <div>
-              {/* Barra de selección */}
               <div style={{
                 display: "flex", alignItems: "center", gap: 10,
                 marginBottom: 10, flexWrap: "wrap",
@@ -527,7 +532,6 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
                   </span>
                 )}
 
-                {/* Botón re-consultar */}
                 {paso === "lista" && (
                   <button onClick={listarFacturas} disabled={cargando}
                     style={{ marginLeft: "auto", background: "transparent", border: "1px solid #2d3f6e", color: "#60a5fa", borderRadius: 5, padding: "4px 10px", cursor: "pointer", fontSize: 11 }}>
@@ -536,7 +540,6 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
                 )}
               </div>
 
-              {/* Tabla de facturas */}
               <div style={{
                 background: "#0d101a",
                 border: "1px solid #1e2235",
@@ -687,7 +690,6 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
             Cancelar
           </button>
 
-          {/* Botón según el paso actual */}
           {paso === "token" && (
             <button
               onClick={autenticar}
@@ -774,6 +776,7 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
               {descargandoPDFs ? "⏳ Descargando..." : "📄 Descargar PDFs"}
             </button>
           )}
+
           {paso === "listo" && xmlsDesc.length > 0 && (
             <button
               onClick={() => onXmlsDescargados(xmlsDesc)}
