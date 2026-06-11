@@ -78,12 +78,43 @@ async function getAuxiliaresConTarifa(empresaId) {
 }
 
 async function getEmpresaId() {
-  // Leer sesión de ContaFlex desde localStorage
   try {
     const s = localStorage.getItem('eg_session');
     if (s) { const o=JSON.parse(s); return o.empresaId||null; }
   } catch(e) {}
   return null;
+}
+
+async function getAnioActivoEmpresa(empresaId) {
+  if (!supa || !empresaId) return null;
+  try {
+    // Primero intentar desde anios_contables
+    const {data,error} = await supa
+      .from('anios_contables')
+      .select('anio')
+      .eq('empresa_id', empresaId)
+      .eq('anio_activo', true)
+      .single();
+    if (!error && data?.anio) return String(data.anio);
+    // Fallback: campo anio_activo en tabla empresas
+    const {data:emp} = await supa
+      .from('empresas')
+      .select('anio_activo')
+      .eq('id', empresaId)
+      .single();
+    if (emp?.anio_activo) return String(emp.anio_activo);
+  } catch(e) {}
+  // Último fallback: localStorage de ContaFlex
+  try {
+    const s = localStorage.getItem('eg_session');
+    if (s) {
+      const o = JSON.parse(s);
+      const key = 'cf_anio_activo_' + o.empresaId;
+      const anio = localStorage.getItem(key);
+      if (anio) return String(anio);
+    }
+  } catch(e) {}
+  return String(new Date().getFullYear());
 }
 
 const PUC_EMPRESA = `plncod\tplnnom
@@ -588,7 +619,29 @@ function generarFilasContables(factura, docNum, config) {
   return filas;
 }
 
-function enviarAContaFlex(aprobadas) {
+async function enviarAContaFlex(aprobadas) {
+  // Leer año activo desde Supabase
+  const empresaId = await getEmpresaId();
+  const anioActivo = await getAnioActivoEmpresa(empresaId);
+
+  // Validar que todas las facturas correspondan al año activo
+  const facturasFueraDeAnio = aprobadas.filter(f => {
+    const anioFactura = String((f.fecha||'').slice(0,4));
+    return anioFactura && anioFactura !== String(anioActivo);
+  });
+
+  if (facturasFueraDeAnio.length > 0) {
+    const detalle = facturasFueraDeAnio.map(f =>
+      `• ${f.razonSocial||f.nitProveedor} — Fecha: ${f.fecha} (año ${(f.fecha||'').slice(0,4)})`
+    ).join('\n');
+    const continuar = confirm(
+      `⚠ ADVERTENCIA — Año de trabajo activo en ContaFlex: ${anioActivo}\n\n` +
+      `Las siguientes facturas tienen fechas de otro año:\n${detalle}\n\n` +
+      `¿Desea enviarlas de todas formas?`
+    );
+    if (!continuar) return null;
+  }
+
   // Construir array de comprobantes en formato ContaFlex
   const comprobantes = aprobadas.map(f => {
     const ia = f.ia || {};
@@ -620,6 +673,7 @@ function enviarAContaFlex(aprobadas) {
     return {
       tipo_doc: 'CO',
       fecha: f.fecha||new Date().toISOString().slice(0,10),
+      anio_contable: anioActivo,
       concepto: ia.concepto_general || ('Factura '+f.razonSocial||''),
       nit: f.nitProveedor||'',
       beneficiario: f.razonSocial||'',
@@ -662,6 +716,87 @@ function exportarExcel(facturas, config, soloUna = null) {
   a.click();
 }
 
+function exportarTerceros(facturas) {
+  // Deduplicar por NIT
+  const mapa = {};
+  facturas.filter(f=>!f.error&&f.nitProveedor).forEach(f=>{
+    const nit = (f.nitProveedor||'').replace(/[^0-9]/g,'');
+    if(!nit) return;
+    if(!mapa[nit]) mapa[nit] = f;
+  });
+  const lista = Object.values(mapa);
+  if(!lista.length){ alert('No hay proveedores para exportar'); return; }
+
+  const headers = [
+    'TipoPersona','TipoDoc','Numero','DV','PrimerApellido','SegundoApellido',
+    'PrimerNombre','OtrosNombres','RazonSocial','NombreComercial',
+    'CodDepartamento','NombreDepartamento','CodMunicipio','NombreMunicipio',
+    'Direccion','CorreoPrincipal','CorreoFacturacion','Celular','Telefono',
+    'Regimen','ResponsableIVA','GranContribuyente','Autorretenedor',
+    'AgenteRetencionIVA','CIIU','ResponsabilidadesDIAN','Tipos',
+    'EsCliente','EsProveedor','EsEmpleado','Estado'
+  ];
+
+  const rows = [headers];
+  lista.forEach(f => {
+    const nit = (f.nitProveedor||'').replace(/[^0-9]/g,'');
+    const esAuto = f.esAutorretenedor ? 'SI' : 'NO';
+    // Detectar tipo persona: NIT empresa (9 díg) vs cédula persona natural
+    const esEmpresa = nit.length >= 9;
+    // Calcular DV si es NIT
+    let dv = '';
+    if(esEmpresa && nit.length === 9) {
+      const pesos = [3,7,13,17,19,23,29,37,41,43,47,53,59,67,71];
+      const digits = nit.split('').reverse();
+      let suma = 0;
+      digits.forEach((d,i) => { suma += parseInt(d) * pesos[i]; });
+      const mod = suma % 11;
+      dv = String(mod > 1 ? 11 - mod : mod);
+    }
+    rows.push([
+      esEmpresa ? '2' : '1',          // TipoPersona: 1=Natural, 2=Jurídica
+      esEmpresa ? '31' : '13',        // TipoDoc: 31=NIT, 13=Cédula
+      nit,                             // Numero
+      dv,                              // DV
+      '',                              // PrimerApellido
+      '',                              // SegundoApellido
+      '',                              // PrimerNombre
+      '',                              // OtrosNombres
+      esEmpresa ? (f.razonSocial||'') : '', // RazonSocial
+      '',                              // NombreComercial
+      '',                              // CodDepartamento
+      f.departamento||'',              // NombreDepartamento
+      '',                              // CodMunicipio
+      f.ciudad||'',                    // NombreMunicipio
+      f.direccion||'',                 // Direccion
+      '',                              // CorreoPrincipal
+      '',                              // CorreoFacturacion
+      '',                              // Celular
+      '',                              // Telefono
+      esEmpresa ? 'RESPONSABLE_IVA' : 'NO_RESPONSABLE', // Regimen
+      esEmpresa ? 'SI' : 'NO',        // ResponsableIVA
+      'NO',                            // GranContribuyente
+      esAuto,                          // Autorretenedor
+      'NO',                            // AgenteRetencionIVA
+      '',                              // CIIU
+      esEmpresa ? 'O-13;O-15;O-23;O-47' : 'R-99-PN', // ResponsabilidadesDIAN
+      'PROVEEDOR',                     // Tipos
+      'NO',                            // EsCliente
+      'SI',                            // EsProveedor
+      'NO',                            // EsEmpleado
+      'ACTIVO',                        // Estado
+    ]);
+  });
+
+  const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(',')).join('
+');
+  const a = document.createElement('a');
+  a.href = 'data:text/csv;charset=utf-8,%EF%BB%BF' + encodeURIComponent(csv);
+  a.download = `Terceros_ContaFlex_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  console.log('Terceros exportados:', lista.length, lista.map(f=>f.nitProveedor+'|'+f.razonSocial));
+}
+
 function CeldaEditable({ valor, onChange, tipo="text", style={} }) {
   const [editando, setEditando] = useState(false);
   const [tmp, setTmp] = useState(valor);
@@ -681,6 +816,33 @@ function CeldaEditable({ valor, onChange, tipo="text", style={} }) {
   );
 }
 
+function AnioActivoBadge() {
+  const [anio, setAnio] = React.useState(null);
+  const [empresaNombre, setEmpresaNombre] = React.useState('');
+  React.useEffect(()=>{
+    (async()=>{
+      const empId = await getEmpresaId();
+      const a = await getAnioActivoEmpresa(empId);
+      setAnio(a);
+      // Leer nombre empresa desde sesión
+      try {
+        const s = localStorage.getItem('eg_session');
+        if(s){ const o=JSON.parse(s); setEmpresaNombre(o.empresaNombre||''); }
+      } catch(e){}
+    })();
+  },[]);
+  if(!anio) return null;
+  return (
+    <div style={{display:'flex',alignItems:'center',gap:8,background:'rgba(201,168,76,0.1)',border:'1px solid rgba(201,168,76,0.3)',borderRadius:8,padding:'8px 14px',marginTop:10}}>
+      <span style={{fontSize:16}}>📅</span>
+      <div>
+        <div style={{fontSize:11,color:'#c9a84c',fontWeight:700}}>Año de trabajo activo en ContaFlex</div>
+        <div style={{fontSize:13,color:'#fff',fontWeight:700,fontFamily:"'IBM Plex Mono',monospace"}}>{anio} {empresaNombre&&<span style={{fontSize:11,color:'#94a3b8',fontWeight:400}}>· {empresaNombre}</span>}</div>
+      </div>
+    </div>
+  );
+}
+
 function ModalExport({ facturas, onClose }) {
   const aprobadas = facturas.filter(f => f.aprobado && !f.error).sort((a, b) => (a.fecha || "").localeCompare(b.fecha || ""));
   const [cfg, setCfg] = useState({ docNumInicio: "1", tpcCod: "CO", prfCod: "", docAux: "", ctoCod: "" });
@@ -693,6 +855,7 @@ function ModalExport({ facturas, onClose }) {
           <div>
             <div style={{fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:700,fontSize:17,color:"#fff"}}>⬇ Exportar comprobante contable</div>
             <div style={{fontSize:11,color:"#64748b",marginTop:2}}>{aprobadas.length} facturas aprobadas · ordenadas por fecha</div>
+      <AnioActivoBadge/>
           </div>
           <button onClick={onClose} style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",borderRadius:6,padding:"4px 10px",cursor:"pointer",fontSize:12,fontFamily:"inherit"}}>✕ Cerrar</button>
         </div>
@@ -759,12 +922,10 @@ function ModalExport({ facturas, onClose }) {
             ⬇ Descargar TODAS ({aprobadas.length})
           </button>
           <button onClick={()=>{
-            const enviadas = enviarAContaFlex(aprobadas);
+            const enviadas = await enviarAContaFlex(aprobadas);
             if(enviadas) {
-              // Mover aprobadas a subidas
               const nuevasSubidas = [...subidas, ...aprobadas.map(f=>({...f,fechaSubida:new Date().toISOString().slice(0,10)}))];
               guardarSubidas(nuevasSubidas);
-              // Quitar aprobadas de facturas pendientes
               setFacturas(p=>p.filter(f=>!f.aprobado||f.error));
             }
           }} disabled={aprobadas.length===0}
@@ -781,7 +942,7 @@ function ModalExport({ facturas, onClose }) {
               📋 {tablaBases.length?"Actualizar bases":"Cargar bases retención"}
             </button>
           </div>
-          <button onClick={()=>enviarAContaFlex(aprobadas)} disabled={aprobadas.length===0}
+          <button onClick={async()=>{ await enviarAContaFlex(aprobadas); }} disabled={aprobadas.length===0}
             style={{background:aprobadas.length?"#e8b84b":"#1e2235",color:aprobadas.length?"#0f1f3d":"#475569",border:"none",borderRadius:8,padding:"10px 22px",cursor:aprobadas.length?"pointer":"not-allowed",fontSize:13,fontWeight:700,fontFamily:"inherit",marginLeft:8}}>
             ↗ Enviar a ContaFlex ({aprobadas.length})
           </button>
@@ -1141,6 +1302,7 @@ const getDocNum = (id) => { const idx=aprobadasOrdenadas.findIndex(f=>f.id===id)
           {facturas.length>0&&(<>
             <div style={{fontSize:11,color:"#64748b"}}><span style={{color:"#4f7cff",fontWeight:700}}>{facturas.filter(f=>!f.error).length}</span> facturas · <span style={{color:"#22c55e",fontWeight:700}}>{aprobadasOrdenadas.length}</span> aprobadas</div>
             {aprobadasOrdenadas.length>0&&<button onClick={()=>setModalExport(true)} style={{background:"#22c55e",color:"#fff",border:"none",borderRadius:6,padding:"6px 14px",cursor:"pointer",fontSize:12,fontWeight:700,fontFamily:"inherit"}}>⬇ Exportar Excel</button>}
+            {facturas.filter(f=>!f.error&&f.nitProveedor).length>0&&<button onClick={()=>exportarTerceros(facturas)} style={{background:"#1e3a5f",color:"#60a5fa",border:"1px solid #2d5a8e",borderRadius:6,padding:"6px 14px",cursor:"pointer",fontSize:12,fontWeight:700,fontFamily:"inherit"}}>👥 Exportar Terceros</button>}
             <button onClick={()=>setFacturas([])} style={{background:"transparent",border:"1px solid #2d3352",color:"#64748b",borderRadius:6,padding:"4px 9px",cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>🗑</button>
           </>)}
         </div>
