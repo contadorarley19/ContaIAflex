@@ -1,480 +1,1546 @@
-// netlify/functions/dian-proxy.js — versión corregida
-// FIXES:
-//   1. XML se envía SIEMPRE como base64 puro — elimina Unterminated string in JSON
-//   2. Sanitización agresiva del XML antes de codificar (caracteres de control, surrogados)
-//   3. Respuesta del batch truncada si supera 5.9MB (límite Netlify) → chunks parciales
-//   4. Timeout de 24s con margen de seguridad por factura individual
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ContaIA DIAN</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0f1117; }
+  ::-webkit-scrollbar { width: 5px; }
+  ::-webkit-scrollbar-track { background: #1a1d27; }
+  ::-webkit-scrollbar-thumb { background: #3a3f5c; border-radius: 3px; }
+  .dz { border: 2px dashed #2d3352; border-radius: 14px; padding: 44px 24px; text-align: center; transition: all .2s; cursor: pointer; }
+  .dz:hover, .dz.over { border-color: #4f7cff; background: rgba(79,124,255,.05); }
+  @keyframes spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useCallback, useEffect, useRef } = React;
 
-const https = require("https");
-const zlib  = require("zlib");
+// ── TABLA DE BASES HISTÓRICAS DE RETENCIÓN ───────────────────────────────────
+// Se carga desde Excel subido por el usuario
+// Formato: concepto | cuenta | tarifa_pct | base_minima_uvt | uvt_anio | fecha_inicio | fecha_fin
+// UVT 2023: $42.412 | UVT 2024: $47.065 | UVT 2025: $49.799
+const UVT_POR_ANIO = { 2022:38004, 2023:42412, 2024:47065, 2025:49799, 2026:52669 };
 
-const DIAN_HOST_PROD = "catalogo-vpfe.dian.gov.co";
-const DIAN_HOST_HAB  = "catalogo-vpfe-hab.dian.gov.co";
-
-// Netlify Free: respuesta máx ~6MB. Con base64 cada XML ~3KB → 46 facturas ~140KB. OK.
-// Si alguien tiene 200 facturas puede llegar al límite → cortar y avisar.
-const MAX_RESPONSE_BYTES = 5 * 1024 * 1024; // 5MB de margen
-
-function mergeCookies(existing, incoming) {
-  if (!incoming) return existing || "";
-  if (!existing)  return incoming;
-  const map = {};
-  [...existing.split(";"), ...incoming.split(";")]
-    .map(c => c.trim()).filter(Boolean)
-    .forEach(c => { const [k, ...v] = c.split("="); if (k.trim()) map[k.trim()] = v.join("="); });
-  return Object.entries(map).map(([k, v]) => `${k}=${v}`).join("; ");
+function getUVT(fecha) {
+  const anio = parseInt((fecha||'').slice(0,4)) || new Date().getFullYear();
+  return UVT_POR_ANIO[anio] || UVT_POR_ANIO[2025];
 }
 
-function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
-function backoffMs(n) { return n === 0 ? 0 : Math.min(800 * Math.pow(2, n - 1), 8000); }
+function aplicaRetencion(subtotal, fecha, tablaBases, concepto_ia, cuenta_ia) {
+  // Buscar regla vigente para esa fecha y cuenta/concepto
+  if (!tablaBases || !tablaBases.length) return { aplica: true, tarifa: null, baseMin: 0, regla: null };
+  const fechaDoc = fecha || new Date().toISOString().slice(0,10);
+  const uvt = getUVT(fechaDoc);
 
-// ── Sanitizar XML para que sea JSON-safe ──────────────────────────────────────
-// El problema "Unterminated string in JSON" ocurre porque el XML de algunas
-// facturas DIAN contiene caracteres inválidos en JSON:
-//   • Caracteres de control (0x00-0x1F excepto tab/lf/cr)
-//   • Pares sustitutos UTF-16 sueltos (surrogates) que no son UTF-8 válido
-//   • BOM (0xFEFF)
-// SOLUCIÓN: convertir el contenido del XML a Buffer UTF-8 y codificar en base64.
-// El base64 es 100% JSON-safe por definición — no puede contener comillas ni
-// caracteres de control. El frontend decodifica con TextDecoder.
-function sanitizarXmlBytes(rawBytes, encoding) {
-  let content;
-  try {
-    if      (encoding === "latin1")   content = rawBytes.toString("latin1");
-    else if (encoding === "utf16le")  content = rawBytes.toString("utf16le");
-    else                              content = rawBytes.toString("utf8");
-  } catch(e) {
-    content = rawBytes.toString("latin1"); // fallback seguro
-  }
-
-  // Eliminar BOM
-  content = content.replace(/^\uFEFF/, "");
-
-  // Eliminar caracteres de control (excepto \t \n \r que son válidos en XML)
-  // Incluye surrogates sueltos (\uD800-\uDFFF)
-  // eslint-disable-next-line no-control-regex
-  content = content.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\uD800-\uDFFF]/g, "");
-
-  // Reconvertir a Buffer UTF-8 limpio y devolver base64
-  return Buffer.from(content, "utf8").toString("base64");
-}
-
-// ── HTTP ──────────────────────────────────────────────────────────────────────
-
-function dianRequest(path, cookies, method, bodyStr, host, timeoutMs = 28000) {
-  method = method || "GET";
-  host   = host   || DIAN_HOST_PROD;
-  return new Promise((resolve, reject) => {
-    const bodyBuf = bodyStr ? Buffer.from(bodyStr, "utf8") : null;
-    const options = {
-      hostname: host, port: 443, path, method,
-      headers: {
-        "Cookie":           cookies || "",
-        "User-Agent":       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
-        "Accept":           "application/json, text/javascript, */*; q=0.01",
-        "Accept-Encoding":  "gzip, deflate, br",
-        "Accept-Language":  "es-CO,es;q=0.9,en;q=0.8",
-        "Referer":          `https://${host}/Document/Received`,
-        "X-Requested-With": "XMLHttpRequest",
-        "Connection":       "keep-alive",
-        ...(bodyBuf ? {
-          "Content-Type":   "application/x-www-form-urlencoded; charset=UTF-8",
-          "Content-Length": String(bodyBuf.length),
-        } : {}),
-      },
-    };
-    const req = https.request(options, (res) => {
-      const setCookies = res.headers["set-cookie"] || [];
-      const newCookies = setCookies.map(c => c.split(";")[0]).join("; ");
-      const chunks = [];
-      const enc = res.headers["content-encoding"];
-      let stream = res;
-      if (enc === "gzip")    stream = res.pipe(zlib.createGunzip());
-      if (enc === "deflate") stream = res.pipe(zlib.createInflate());
-      if (enc === "br")      stream = res.pipe(zlib.createBrotliDecompress());
-      stream.on("data",  chunk => chunks.push(chunk));
-      stream.on("end",   ()    => resolve({ statusCode: res.statusCode, headers: res.headers, cookies: newCookies, body: Buffer.concat(chunks).toString("utf8") }));
-      stream.on("error", reject);
-    });
-    req.on("error", reject);
-    req.setTimeout(timeoutMs, () => { req.destroy(); reject(new Error("Timeout DIAN")); });
-    if (bodyBuf) req.write(bodyBuf);
-    req.end();
+  // Filtrar reglas vigentes para la fecha
+  const vigentes = tablaBases.filter(r => {
+    const ini = r.fecha_inicio || '2000-01-01';
+    const fin = r.fecha_fin   || '2099-12-31';
+    const cuentaMatch = !r.cuenta || String(r.cuenta) === String(cuenta_ia) || 
+                        (r.cuenta && String(cuenta_ia).startsWith(String(r.cuenta).slice(0,4)));
+    const conceptoMatch = !r.concepto || (concepto_ia||'').toLowerCase().includes((r.concepto||'').toLowerCase());
+    return fechaDoc >= ini && fechaDoc <= fin && (cuentaMatch || conceptoMatch);
   });
+
+  if (!vigentes.length) return { aplica: true, tarifa: null, baseMin: 0, regla: null };
+
+  // Tomar la regla más específica (cuenta más larga = más específica)
+  vigentes.sort((a,b) => String(b.cuenta||'').length - String(a.cuenta||'').length);
+  const regla = vigentes[0];
+
+  // Calcular base mínima en pesos
+  const baseMinPesos = regla.base_uvt ? regla.base_uvt * uvt : (regla.base_pesos || 0);
+  const tarifa = parseFloat(regla.tarifa_pct) || 0;
+  const aplica = subtotal >= baseMinPesos;
+
+  return { aplica, tarifa, baseMin: baseMinPesos, regla, uvt };
 }
 
-function dianDownloadBinary(path, cookies, host, timeoutMs = 30000) {
-  host = host || DIAN_HOST_PROD;
-  return new Promise((resolve, reject) => {
-    const options = {
-      hostname: host, port: 443, path, method: "GET",
-      headers: {
-        "Cookie":           cookies || "",
-        "User-Agent":       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept":           "application/zip,application/octet-stream,*/*",
-        "Referer":          `https://${host}/Document/Received`,
-        "X-Requested-With": "XMLHttpRequest",
-        "Connection":       "keep-alive",
-      },
-    };
-    const req = https.request(options, (res) => {
-      const chunks = [];
-      res.on("data",  chunk => chunks.push(chunk));
-      res.on("end",   ()    => resolve({ statusCode: res.statusCode, headers: res.headers, rawBuffer: Buffer.concat(chunks) }));
-      res.on("error", reject);
-    });
-    req.on("error", reject);
-    req.setTimeout(timeoutMs, () => { req.destroy(); reject(new Error("Timeout ZIP")); });
-    req.end();
-  });
+// ── Supabase ContaFlex ───────────────────────────────────────────
+const SUPA_URL = "https://znqsbadwcfgunwndtswd.supabase.co";
+const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpucXNiYWR3Y2ZndW53bmR0c3dkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzgwNDQ0MDAsImV4cCI6MjA5MzYyMDQwMH0.pbzUbObiitXCGrJYazO0SfaQrBchDqIR4_ZgEmjmhZQ";
+const supa = window.supabase ? window.supabase.createClient(SUPA_URL, SUPA_KEY) : null;
+
+async function getAuxiliaresConTarifa(empresaId) {
+  if (!supa || !empresaId) return [];
+  const {data,error} = await supa.from('puc_auxiliares').select('codigo,nombre,tarifa').eq('empresa_id',empresaId);
+  return error ? [] : (data||[]);
 }
 
-// ── Descarga con reintentos ────────────────────────────────────────────────────
-
-async function downloadConReintentos(trackId, cookies, host, maxIntentos = 4) {
-  let ultimoError = null;
-  for (let intento = 0; intento < maxIntentos; intento++) {
-    if (intento > 0) await sleep(backoffMs(intento));
-    try {
-      const result = await dianDownloadBinary(
-        `/Document/DownloadZipFiles?trackId=${trackId}`,
-        cookies, host, 22000 + intento * 4000
-      );
-      if (result.statusCode === 502 || result.statusCode === 503 || result.statusCode === 504) {
-        ultimoError = new Error(`HTTP ${result.statusCode}`);
-        continue;
-      }
-      if (result.statusCode === 401 || result.statusCode === 403) throw new Error("Sesion expirada");
-      if (result.statusCode !== 200) throw new Error(`HTTP ${result.statusCode}`);
-      const isZip = result.rawBuffer[0] === 0x50 && result.rawBuffer[1] === 0x4b;
-      if (!isZip) {
-        const preview = result.rawBuffer.slice(0, 200).toString("utf8");
-        if (preview.toLowerCase().includes("session") || preview.toLowerCase().includes("login")) {
-          throw new Error("Sesion expirada");
-        }
-        ultimoError = new Error("Respuesta no es ZIP");
-        continue;
-      }
-      return result;
-    } catch(e) {
-      if (e.message === "Sesion expirada") throw e;
-      ultimoError = e;
-    }
-  }
-  throw ultimoError || new Error("Falló tras reintentos");
-}
-
-// ── Parseo ZIP — devuelve base64 directamente ─────────────────────────────────
-
-function extractXmlBase64FromZip(buffer) {
+async function getEmpresaId() {
   try {
-    const PK_SIG = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
-    const candidatos = []; // Recoger todos los XML/HTML del ZIP
-    let pos = 0;
-    while (pos < buffer.length - 4) {
-      const idx = buffer.indexOf(PK_SIG, pos);
-      if (idx === -1) break;
-      const compressionMethod = buffer.readUInt16LE(idx + 8);
-      const compressedSize    = buffer.readUInt32LE(idx + 18);
-      const filenameLength    = buffer.readUInt16LE(idx + 26);
-      const extraLength       = buffer.readUInt16LE(idx + 28);
-      const filename          = buffer.slice(idx + 30, idx + 30 + filenameLength).toString("utf8");
-      const dataStart         = idx + 30 + filenameLength + extraLength;
-      const compressedData    = buffer.slice(dataStart, dataStart + compressedSize);
-      const ext               = filename.toLowerCase();
-
-      if (ext.endsWith(".xml") || ext.endsWith(".html")) {
-        try {
-          let rawBytes;
-          if      (compressionMethod === 0) rawBytes = compressedData;
-          else if (compressionMethod === 8) rawBytes = zlib.inflateRawSync(compressedData);
-          if (rawBytes && rawBytes.length > 0) {
-            // Detectar encoding desde la declaración XML
-            const head = rawBytes.slice(0, 300).toString("latin1");
-            let encoding = "utf8";
-            if      (head.match(/encoding=["']ISO-8859-1["']/i)) encoding = "latin1";
-            else if (head.match(/encoding=["']UTF-16["']/i))     encoding = "utf16le";
-            // Sanitizar y convertir a base64 JSON-safe
-            const xmlB64 = sanitizarXmlBytes(rawBytes, encoding);
-            candidatos.push({ filename, xmlB64, esXml: ext.endsWith(".xml") });
-          }
-        } catch(e) { /* ignorar y continuar */ }
-      }
-      pos = dataStart + Math.max(compressedSize, 1);
-    }
-    // Preferir .xml sobre .html
-    const xml  = candidatos.find(c => c.esXml);
-    const html = candidatos.find(c => !c.esXml);
-    return (xml || html)?.xmlB64 || null;
-  } catch(e) { return null; }
+    const s = localStorage.getItem('eg_session');
+    if (s) { const o=JSON.parse(s); return o.empresaId||null; }
+  } catch(e) {}
+  return null;
 }
 
-function extractPdfFromZip(buffer) {
+async function getAnioActivoEmpresa(empresaId) {
+  if (!supa || !empresaId) return null;
   try {
-    const PK_SIG = Buffer.from([0x50, 0x4b, 0x03, 0x04]);
-    let pos = 0;
-    while (pos < buffer.length - 4) {
-      const idx = buffer.indexOf(PK_SIG, pos);
-      if (idx === -1) break;
-      const compressionMethod = buffer.readUInt16LE(idx + 8);
-      const compressedSize    = buffer.readUInt32LE(idx + 18);
-      const filenameLength    = buffer.readUInt16LE(idx + 26);
-      const extraLength       = buffer.readUInt16LE(idx + 28);
-      const filename          = buffer.slice(idx + 30, idx + 30 + filenameLength).toString("utf8");
-      const dataStart         = idx + 30 + filenameLength + extraLength;
-      const compressedData    = buffer.slice(dataStart, dataStart + compressedSize);
-      if (filename.toLowerCase().endsWith(".pdf")) {
-        try {
-          if (compressionMethod === 0) return compressedData;
-          if (compressionMethod === 8) return zlib.inflateRawSync(compressedData);
-        } catch(e) {}
-      }
-      pos = dataStart + Math.max(compressedSize, 1);
-    }
-    return null;
-  } catch(e) { return null; }
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function parseDianDate(val) {
-  if (!val) return "";
-  const m = String(val).match(/Date\((\d+)\)/);
-  if (!m) return String(val).slice(0, 10);
-  return new Date(parseInt(m[1])).toISOString().slice(0, 10);
-}
-
-async function getVerificationToken(cookies, host) {
-  host = host || DIAN_HOST_PROD;
-  const result     = await dianRequest("/Document/Received", cookies, "GET", null, host, 20000);
-  const newCookies = mergeCookies(cookies, result.cookies);
-  const match      = result.body.match(/name="__RequestVerificationToken"[^>]+value="([^"]+)"/);
-  return { token: match ? match[1] : "", cookies: newCookies };
-}
-
-// ── HANDLER ───────────────────────────────────────────────────────────────────
-
-exports.handler = async (event) => {
-  const headers = {
-    "Access-Control-Allow-Origin":  "*",
-    "Access-Control-Allow-Headers": "Content-Type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Content-Type": "application/json",
-  };
-
-  if (event.httpMethod === "OPTIONS") return { statusCode: 200, headers, body: "" };
-  if (event.httpMethod !== "POST")    return { statusCode: 405, headers, body: JSON.stringify({ error: "Metodo no permitido" }) };
-
-  let body;
-  try { body = JSON.parse(event.body || "{}"); }
-  catch { return { statusCode: 400, headers, body: JSON.stringify({ error: "JSON invalido" }) }; }
-
-  const { action } = body;
-
+    // Primero intentar desde anios_contables
+    const {data,error} = await supa
+      .from('anios_contables')
+      .select('anio')
+      .eq('empresa_id', empresaId)
+      .eq('anio_activo', true)
+      .single();
+    if (!error && data?.anio) return String(data.anio);
+    // Fallback: campo anio_activo en tabla empresas
+    const {data:emp} = await supa
+      .from('empresas')
+      .select('anio_activo')
+      .eq('id', empresaId)
+      .single();
+    if (emp?.anio_activo) return String(emp.anio_activo);
+  } catch(e) {}
+  // Último fallback: localStorage de ContaFlex
   try {
-
-    // ── AUTH ──────────────────────────────────────────────────────────────────
-    if (action === "auth") {
-      const { tokenUrl } = body;
-      if (!tokenUrl || (!tokenUrl.includes("catalogo-vpfe.dian.gov.co") && !tokenUrl.includes("catalogo-vpfe-hab.dian.gov.co"))) {
-        return { statusCode: 400, headers, body: JSON.stringify({ error: "URL de token inválida" }) };
-      }
-      let cleanUrl = tokenUrl.trim();
-      if (cleanUrl.includes("safelinks.protection.outlook.com")) {
-        try {
-          const match = cleanUrl.match(/[?&]url=([^&]+)/);
-          if (match) cleanUrl = decodeURIComponent(decodeURIComponent(match[1]));
-        } catch(e) {}
-      }
-      if (cleanUrl.includes("%3A%2F%2F") || cleanUrl.includes("%3A%2f%2f")) {
-        cleanUrl = decodeURIComponent(cleanUrl);
-      }
-      const url      = new URL(cleanUrl);
-      const path     = url.pathname + url.search;
-      const dianHost = url.hostname.includes("-hab") ? DIAN_HOST_HAB : DIAN_HOST_PROD;
-
-      let result  = await dianRequest(path, "", "GET", null, dianHost);
-      let cookies = result.cookies;
-      let redirects = 0;
-      while ((result.statusCode === 301 || result.statusCode === 302 || result.statusCode === 303) && redirects < 5) {
-        const loc   = result.headers["location"] || "";
-        const rPath = loc.startsWith("http") ? new URL(loc).pathname + new URL(loc).search : loc;
-        cookies     = mergeCookies(cookies, result.cookies);
-        result      = await dianRequest(rPath, cookies, "GET", null, dianHost);
-        redirects++;
-      }
-      cookies = mergeCookies(cookies, result.cookies);
-      if (!cookies || !cookies.includes("ASP.NET_SessionId")) {
-        return { statusCode: 401, headers, body: JSON.stringify({ error: "No se obtuvo sesión. El token expiró o ya fue usado." }) };
-      }
-      return { statusCode: 200, headers, body: JSON.stringify({ ok: true, cookies, dianHost, mensaje: "Sesión DIAN iniciada" }) };
+    const s = localStorage.getItem('eg_session');
+    if (s) {
+      const o = JSON.parse(s);
+      const key = 'cf_anio_activo_' + o.empresaId;
+      const anio = localStorage.getItem(key);
+      if (anio) return String(anio);
     }
+  } catch(e) {}
+  return String(new Date().getFullYear());
+}
 
-    // ── LIST ──────────────────────────────────────────────────────────────────
-    if (action === "list") {
-      const { cookies, desde, hasta, dianHost: dh } = body;
-      const dianHost = dh || DIAN_HOST_PROD;
-      if (!cookies) return { statusCode: 400, headers, body: JSON.stringify({ error: "Cookies requeridas" }) };
-      const startDate = desde || new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
-      const endDate   = hasta || new Date().toISOString().slice(0, 10);
-      const tokenInfo  = await getVerificationToken(cookies, dianHost);
-      const newCookies = tokenInfo.cookies;
-      const formBody = [
-        "draw=1","start=0","length=500",
-        "DocumentKey=","SerieAndNumber=","SenderCode=","ReceiverCode=",
-        `StartDate=${encodeURIComponent(startDate)}`,
-        `EndDate=${encodeURIComponent(endDate)}`,
-        "DocumentTypeId=00","Status=0","IsNextPage=false",
-        "FilterType=3","blockIndex=0","RadianStatus=0",
-        `__RequestVerificationToken=${encodeURIComponent(tokenInfo.token)}`,
-      ].join("&");
-      const result       = await dianRequest("/Document/GetDocumentsPageToken", newCookies, "POST", formBody, dianHost, 25000);
-      const finalCookies = mergeCookies(newCookies, result.cookies);
-      let data;
-      try { data = JSON.parse(result.body); }
-      catch(e) {
-        return { statusCode: 200, headers, body: JSON.stringify({ ok: true, facturas: [], total: 0, cookies: finalCookies, error: "No se pudo parsear respuesta DIAN" }) };
-      }
-      const facturas = (data.data || []).map(doc => ({
-        trackId:        doc.Id,
-        fecha:          parseDianDate(doc.EmissionDate),
-        fechaRecepcion: parseDianDate(doc.ReceptionDate),
-        prefijo:        doc.Serie         || "",
-        nroDocumento:   doc.Number        || "",
-        tipo:           doc.DocumentTypeName || "",
-        nitEmisor:      doc.SenderCode    || "",
-        emisor:         doc.SenderName    || "",
-        receptor:       doc.ReceiverName  || "",
-        resultado:      doc.StatusName    || "",
-        valor:          Math.round(doc.TotalAmount  || 0),
-        iva:            Math.round(doc.TaxAmountIva || 0),
-        tokenConsulta:  doc.TokenConsulta || "",
-        identifier:     doc.Identifier   || "",
-      }));
-      return { statusCode: 200, headers, body: JSON.stringify({ ok: true, facturas, total: facturas.length, recordsTotal: data.recordsTotal || 0, cookies: finalCookies }) };
-    }
+const PUC_EMPRESA = `plncod\tplnnom
+1\tACTIVO
+1052705\tAUXILIO DE TRANSPORTE
+11\tDISPONIBLE
+1105\tCAJA
+110505\tCAJA GENERAL
+11050501\tCaja general
+110510\tCAJAS MENORES
+11051001\tCaja menor
+1110\tBANCOS
+111005\tMONEDA NACIONAL
+11100501\tPuerto concordia
+11100502\tCumaral
+11100503\tCumaral colpatria
+11100504\tLa macarena
+1120\tCUENTAS DE AHORRO
+112005\tBANCOS
+11200501\tBanco de bogota 351345202
+13\tDEUDORES
+1305\tCLIENTES
+130505\tNACIONALES
+13050501\tClientes
+1330\tANTICIPOS Y AVANCES
+133005\tA PROVEEDORES
+13300501\tA proveedores
+1335\tDEPOSITOS
+133535\tEN GARANTIA
+13353505\tEn garantia
+1355\tANTICIPO DE IMPUESTOS Y CONTRI
+135510\tANTICIPO DE IMPUESTOS DE INDUS
+13551001\tAnticipo de industria y comercio
+13551002\t1% transporte
+13551010\t10% honorarios
+135515\tRETENCION EN LA FUENTE
+13551500\t2% contratos de obra
+13551501\t1% contrato de obra
+13551502\t1% transporte de carga
+13551510\t10% honorarios
+13551511\t11% honorarios
+13551535\t3.5% compras
+135517\tIMPUESTO A LAS VENTAS RETENIDO
+13551750\t50% rete iva
+135518\tIMPUESTO DE INDUSTRIA Y COMERC
+13551801\tRetencion de industri y comercio
+14\tCONTRATOS EN EJECUSION
+1405\tCONTRATOS EN EJECUSION
+1410\tHONORARIOS
+141005\tHONORARIOS
+14100503\tResidente administrativo
+14100506\tElaboracion de diseños
+14100507\tHonorarios estudios
+14100508\tHonorarios
+1430\tCONSTRUCCIONES
+143005\tALQUILERES
+14300501\tAlquileres
+143010\tCONSTRUCCION DE EDIFICIOS Y OBRAS
+14301002\tObras civiles
+143015\tSERVICIOS
+14301501\tServicios tecnicos
+14301502\tServicio inde de residente
+14301503\tAsesor juridico
+14301504\tAseo y vigilancia
+143016\tCORREO TRANSPORTES Y FLETES
+14301601\tCorreo transportes y fletes
+143017\tOTROS
+14301701\tOtros
+143018\tMANTENIMIENTO Y REPARACIONES
+14301801\tMantenimiento y reparaciones
+143019\tADECUACION E INSTALACION
+14301901\tAdecuacion e instalacion
+143020\tINSTALACIONES ELECTRICAS
+14302001\tInstalaciones electricas
+143050\tTRANSPORTES FLETES Y ACARREOS
+14305001\tTransportes fletes y acarreos
+1431\tSEGUROS
+143105\tPOLIZAS
+14310501\tPolizas
+1435\tCOMPRAS
+143505\tCOMPRAS
+14350501\tCompras para la construccion de obras
+1440\tGASTOS LEGALES
+144005\tTRAMITES Y LICENCIAS
+14400501\tNotariales
+144015\tTRAMITES Y LICENCIAS
+14401501\tPublicaciones de contratos
+1445\tTRANSPORTE Y SERVICIOS
+144505\tTRANSPORTE POR CARRETERA
+14450501\tTransporte de carga
+144560\tSERVICIOS PUBLICOS
+14456001\tTelefono
+14456002\tLuz
+14456003\tAcueducto y alcantarillado
+1453\tGASTOS
+145305\tFINANCIEROS
+14530505\tGastos bancarios
+145310\tGRAVAMEN Y MOVIMIENTO FINANCIERO
+14531001\tGravamen y movimiento financiero
+145320\tINTERESES
+14532001\tIntereses
+1455\tGASTOS DE VIAJE
+145505\tALOJAMIENTO Y MANUTENCION
+14550501\tAlojamiento y manutencion
+1495\tDIVERSOS
+149520\tELEMENTOS DE ASEO Y CAFETERIA
+14952001\tElementos de aseo y cafeteria
+149521\tUTILES PAPELERIA Y FOTOCOPIAS
+14952101\tUtiles papeleria y fotocopias
+149535\tCOMBUSTIBLES Y LUBRICANTES
+14953501\tCombustibles y lubricantes
+149595\tOTROS
+14959501\tOtros
+15\tPROPIEDAD PLANTA Y EQUIPO
+1520\tMAQUINARIA Y EQUIPO
+152005\tMAQUINARIA Y EQUIPO
+15200501\tMaquinaria y equipo
+1524\tEQUIPO DE OFICINA
+152405\tEQUIPO DE OFICINA
+15240501\tEquipo de oficina
+2\tPASIVO
+22\tPROVEEDORES
+2205\tNACIONALES
+220501\tA PROVEEDORES
+22050101\tProveedores
+23\tCUENTAS POR PAGAR
+2335\tCOSTOS Y GASTOS POR PAGAR
+233525\tHONORARIOS
+23352501\tHonorarios
+233530\tSERVICIOS
+23353001\tServicios
+233540\tARRENDAMIENTOS
+23354001\tArrendamientos
+233545\tTRANSPORTES FLETES Y ACARREOS
+23354501\tTransportes fletes y acarreos
+2365\tRETENCION EN LA FUENTE
+236515\tHONORARIOS
+23651510\t10% honorarios
+23651511\t11% honorarios
+236525\tSERVICIOS
+23652501\t1% transporte
+23652502\t2% ser. vigilancia
+23652504\t4% servicios declarantes
+23652506\t6% servicios no declarantes
+23652535\tTransporte de pasajeros 3.5%
+236530\tARRENDAMIENTOS
+23653035\t3.5% arriendo inmuebles
+23653040\t4% arriendo muebles
+236540\tCOMPRAS
+23654001\t0.1% combustible
+23654035\t2.5% compras
+23654036\tRete de 3.5%
+236570\tOTRAS RETENCIONES
+23657001\t1% contrato de obra
+23657002\tObra 2%
+2367\tIMPUESTO A LAS VENTAS RETENIDO
+236701\tRETENCION IMPUESTOS VENTAS
+23670101\tImpuesto a las ventas retenido
+24\tIMPUESTOS GRAVAMENES Y TASAS
+2408\tIMPUESTO SOBRE LAS VENTAS
+240810\tIMPUESTO A LAS VENTAS DESCONTABLE
+24081010\tIva compras
+240815\tRETENCION DE IVA
+24081501\tRetencion de iva
+25\tOBLIGACIONES LABORALES
+2505\tSALARIOS POR PAGAR
+250505\tSALARIOS POR PAGAR
+25050501\tSalarios por pagar
+5\tGASTOS
+51\tOPERACIONALES DE ADMINISTRACION
+5110\tHONORARIOS
+511005\tHONORARIOS
+51100501\tHonorarios
+5135\tSERVICIOS
+513505\tASEO Y VIGILANCIA
+513530\tENERGIA ELECTRICA
+51353001\tServi de ener electrica
+513535\tTELEFONO
+51353501\tTelefono
+513540\tCORREO PORTES Y TELEGRAMAS
+51354001\tMensajeria
+513550\tTRANSPORTE FLETES Y ACARREOS
+51355001\tTransporte flete y acarreo
+513595\tOTROS
+5145\tMANTENIMIENTO Y REPARACIONES
+514515\tMAQUINARIA Y EQUIPO
+5195\tDIVERSOS
+519530\tUTILES PAPELERIA Y FOTOCOPIAS
+51953001\tGastos de papeleria
+519535\tCOMBUSTIBLES Y LUBRICANTES
+519595\tOTROS
+519599\tOTROS GASTOS
+51959901\tOtros gastos
+6\tCOSTO DE VENTAS
+61\tCOSTO DE VENTAS Y PRESTACIONES
+6105\tGASTO DE PERSONAL
+610506\tSUELDOS
+61050601\tSueldos
+6110\tHONORARIOS
+611005\tHONORARIOS
+61100501\tDirector obra
+61100502\tCoordinador area salud
+61100503\tResidente administrativo
+61100504\tAlmacenista
+61100505\tResidente tecnico
+61100508\tHonorarios
+6115\tIMPUESTOS DE LEY
+611570\tIVA TRANSITORIO
+61157001\tIva transitorio compras
+61157002\tIva de servicios
+6120\tALQUILERES PARA LA CONSTRUCCION
+612015\tMAQUINARIA Y EQUIPO
+61201501\tAlquileres
+6130\tCONSTRUCCIONES
+613005\tALQUILERES
+61300501\tAlquileres
+613010\tCONSTRUCCION DE EDIFICIOS Y OBRAS CIVILES
+61301001\tElaboracion de diseños
+61301002\tObras civiles
+613015\tSERVICIOS
+61301501\tServicios tecnicos
+61301502\tAseo y vigilancia
+61301801\tMantenimiento y reparacion
+613050\tTRANSPORTES FLETES Y ACARREOS
+61305001\tTransportes fletes y acarreos
+6131\tSEGUROS
+613105\tPOLIZAS
+61310501\tPolizas
+6135\tCOMPRAS
+613505\tCOMPRAS
+61350501\tCompras para la construccion de obras
+61350502\tCompra material reposicion 1%
+61350503\tCompra productos de señalizacion
+6136\tSERVICIOS
+613605\tSERVICIOS
+61360501\tAseo y vigilancia
+61360504\tTelefono
+61360505\tTransporte fletes y acarreos
+61360507\tAcueducto y alcantarillado
+61360509\tTransporte de pasajeros
+61360510\tTransporte de carga
+613615\tASISTENCIA TECNICA
+61361501\tAsistencia tecnica
+6140\tGASTOS LEGALES
+614005\tTRAMITES Y LICENCIAS
+61400501\tNotariales
+61400502\tGastos legales
+6145\tMANTENIMIENTO E INSTALACIONES
+614505\tTRANSPORTE POR CARRETERA
+61450501\tTransporte de carga
+614550\tMANTENIMIENTO Y REPARACIONES
+61455001\tMantenimiento y reparaciones
+6155\tGASTO DE VIAJE
+615505\tALOJAMIENTO Y MANUTENCION
+61550501\tAlojamiento y manutencion
+615520\tPASAJES TERRESTRES
+61552001\tPasajes terrestres
+6195\tDIVERSOS
+619520\tELEMENTOS DE ASEO Y CAFETERIA
+61952001\tElementos de aseo y cafeteria
+619521\tUTILES DE PAPELERIA Y FOTOCOPIAS
+61952101\tUtiles de papeleria y fotocopias
+619535\tCOMBUSTIBLES Y LUBRICANTES
+61953501\tCombustible
+61953502\tLubricantes
+619599\tOTROS GASTOS
+61959901\tOtros gastos`;
 
-    // ── DOWNLOAD SINGLE ───────────────────────────────────────────────────────
-    if (action === "download") {
-      const { cookies, trackId, dianHost: dh2 } = body;
-      const dianHost2 = dh2 || DIAN_HOST_PROD;
-      if (!cookies || !trackId) return { statusCode: 400, headers, body: JSON.stringify({ error: "cookies y trackId requeridos" }) };
-      const result  = await downloadConReintentos(trackId, cookies, dianHost2);
-      const xmlB64  = extractXmlBase64FromZip(result.rawBuffer);
-      if (!xmlB64)  return { statusCode: 422, headers, body: JSON.stringify({ error: "Sin XML en ZIP" }) };
-      return { statusCode: 200, headers, body: JSON.stringify({ ok: true, xml: xmlB64, encoding: "base64", trackId, zipSize: result.rawBuffer.length }) };
-    }
-
-    // ── DOWNLOAD BATCH ────────────────────────────────────────────────────────
-    if (action === "download_batch") {
-      const { cookies, trackIds, dianHost: dh3 } = body;
-      const dianHost3 = dh3 || DIAN_HOST_PROD;
-      if (!cookies || !Array.isArray(trackIds)) {
-        return { statusCode: 400, headers, body: JSON.stringify({ error: "cookies y trackIds[] requeridos" }) };
-      }
-
-      const CONCURRENCY = 3;
-      const resultados  = [];
-      const errores     = [];
-      let   sesionMuerta = false;
-      let   bytesAcumulados = 0;
-      let   truncado = false;
-
-      for (let i = 0; i < trackIds.length; i += CONCURRENCY) {
-        if (sesionMuerta) {
-          trackIds.slice(i).forEach(tid => errores.push({ trackId: tid, error: "Sesion expirada" }));
-          break;
-        }
-        if (truncado) {
-          trackIds.slice(i).forEach(tid => errores.push({ trackId: tid, error: "Respuesta demasiado grande — procesar en lotes menores" }));
-          break;
-        }
-
-        const lote       = trackIds.slice(i, i + CONCURRENCY);
-        const erroresAnt = errores.length;
-
-        await Promise.all(lote.map(async (trackId) => {
-          try {
-            const result = await downloadConReintentos(trackId, cookies, dianHost3, 4);
-            const xmlB64 = extractXmlBase64FromZip(result.rawBuffer);
-            if (!xmlB64) throw new Error("Sin XML en ZIP");
-            // Verificar que no superamos el límite de respuesta
-            bytesAcumulados += xmlB64.length;
-            if (bytesAcumulados > MAX_RESPONSE_BYTES) {
-              truncado = true;
-              errores.push({ trackId, error: "Límite de respuesta alcanzado" });
-              return;
-            }
-            resultados.push({ trackId, xml: xmlB64, encoding: "base64", zipSize: result.rawBuffer.length });
-          } catch(e) {
-            if (e.message === "Sesion expirada") sesionMuerta = true;
-            errores.push({ trackId, error: e.message });
-          }
-        }));
-
-        if (i + CONCURRENCY < trackIds.length && !sesionMuerta && !truncado) {
-          const hubieronErrores = errores.length > erroresAnt;
-          await sleep(hubieronErrores ? 2500 : 400);
-        }
-      }
-
-      return {
-        statusCode: 200, headers,
-        body: JSON.stringify({ ok: true, resultados, errores, total: trackIds.length, exitosos: resultados.length, sesionMuerta, truncado }),
-      };
-    }
-
-    // ── DOWNLOAD PDF BATCH ─────────────────────────────────────────────────────
-    if (action === "download_pdfs") {
-      const { cookies, facturas } = body;
-      if (!cookies || !Array.isArray(facturas)) {
-        return { statusCode: 400, headers, body: JSON.stringify({ error: "cookies y facturas[] requeridos" }) };
-      }
-      const ordenadas  = [...facturas].sort((a, b) => ((a.fecha||"")+(a.prefijo||"")).localeCompare((b.fecha||"")+(b.prefijo||"")));
-      const CONCURRENCY = 3;
-      const resultados = [], errores = [];
-      let sesionMuerta = false;
-      for (let i = 0; i < ordenadas.length; i += CONCURRENCY) {
-        if (sesionMuerta) {
-          ordenadas.slice(i).forEach(f => errores.push({ trackId: f.trackId, emisor: f.emisor, error: "Sesion expirada" }));
-          break;
-        }
-        const lote       = ordenadas.slice(i, i + CONCURRENCY);
-        const erroresAnt = errores.length;
-        await Promise.all(lote.map(async (f) => {
-          try {
-            const result  = await downloadConReintentos(f.trackId, cookies, DIAN_HOST_PROD, 4);
-            const pdfData = extractPdfFromZip(result.rawBuffer);
-            if (!pdfData) throw new Error("Sin PDF en ZIP");
-            const emisorLimpio = (f.emisor || "desconocido").replace(/[^a-zA-Z0-9À-ɏ]/g,"_").replace(/_+/g,"_").substring(0,30).toUpperCase();
-            const nombre = `${f.fecha||"0000-00-00"}_${emisorLimpio}_${(f.prefijo||"")+(f.nroDocumento||"")}.pdf`;
-            resultados.push({ trackId: f.trackId, nombre, pdf: pdfData.toString("base64"), size: pdfData.length });
-          } catch(e) {
-            if (e.message === "Sesion expirada") sesionMuerta = true;
-            errores.push({ trackId: f.trackId, emisor: f.emisor, error: e.message });
-          }
-        }));
-        if (i + CONCURRENCY < ordenadas.length && !sesionMuerta) {
-          await sleep(errores.length > erroresAnt ? 2500 : 400);
-        }
-      }
-      return { statusCode: 200, headers, body: JSON.stringify({ ok: true, resultados, errores, total: ordenadas.length, exitosos: resultados.length, sesionMuerta }) };
-    }
-
-    // ── DOWNLOAD PDF SINGLE ────────────────────────────────────────────────────
-    if (action === "download_pdf_single") {
-      const { cookies, trackId } = body;
-      if (!cookies || !trackId) return { statusCode: 400, headers, body: JSON.stringify({ error: "cookies y trackId requeridos" }) };
-      const result  = await downloadConReintentos(trackId, cookies, DIAN_HOST_PROD, 3);
-      const pdfData = extractPdfFromZip(result.rawBuffer);
-      if (!pdfData) return { statusCode: 422, headers, body: JSON.stringify({ error: "Sin PDF en ZIP" }) };
-      return { statusCode: 200, headers, body: JSON.stringify({ ok: true, pdf: pdfData.toString("base64"), trackId }) };
-    }
-
-    return { statusCode: 400, headers, body: JSON.stringify({ error: `Accion desconocida: ${action}` }) };
-
-  } catch(err) {
-    console.error("[dian-proxy] Error:", err.message, err.stack);
-    return { statusCode: 500, headers, body: JSON.stringify({ error: err.message || "Error interno" }) };
-  }
+const AUTORRETENEDORES = {
+  "899999068":"ECOPETROL S.A.","899999082":"EMPRESA DE ENERGIA DE BOGOTA S.A. ESP",
+  "899999094":"EMPRESA DE ACUEDUCTO ALCANTARILLADO Y ASEO DE BOGOTA ESP",
+  "899999115":"EMPRESA DE TELECOMUNICACIONES DE BOGOTA SA ESP",
+  "860016610":"INTERCONEXION ELECTRICA S.A. E.S.P","811000740":"ISAGEN S.A. E.S.P.",
+  "890904996":"EMPRESAS PUBLICAS DE MEDELLIN E.S.P.","890905055":"EMPRESAS VARIAS DE MEDELLIN S.A. E.S.P",
+  "800021272":"GASES DEL LLANO S.A ESP","800202395":"EFIGAS GAS NATURAL S.A. E.S.P.",
+  "830045472":"GAS NATURAL CUNDIBOYACENSE S.A. E.S.P.","830037248":"CODENSA S.A. ESP",
+  "860063875":"EMGESA S.A. ESP","830025205":"AES CHIVOR & CIA SCA ESP",
+  "800249860":"EMPRESA DE ENERGIA DEL PACIFICO S.A E.S.P.","802007669":"TRANSELCA S.A. E.S.P.",
+  "890903407":"SEGUROS GENERALES SURAMERICANA S.A.","890903790":"SEGUROS DE VIDA SURAMERICANA S.A.",
+  "800087219":"ZURICH DE OCCIDENTE S.A","830054904":"MAPFRE COLOMBIA VIDA SEGUROS S.A.",
+  "891700037":"MAPFRE SEGUROS GENERALES DE COLOMBIA S.A.","819001190":"COMPAÑIA DE SEGUROS DEL ESTADO S.A.",
+  "860700198":"LA PREVISORA S.A. COMPAÑIA DE SEGUROS","888000286":"POSITIVA COMPAÑIA DE SEGUROS S.A.",
+  "860001942":"BAYER S.A.","890900266":"GRUPO ARGOS S.A.","860002304":"GENERAL MOTORS COLMOTORES S.A.",
+  "860002130":"NESTLE DE COLOMBIA S.A.","860005224":"BAVARIA S.A.","890900608":"ALMACENES ÉXITO S.A.",
+  "860025900":"ALPINA PRODUCTOS ALIMENTICIOS S.A.",
+  "800153993":"COMUNICACIÓN CELULAR S.A COMCEL S.A.","830122566":"COLOMBIA TELECOMUNICACIONES S.A. E.S.P.",
+  "800007813":"GAS NATURAL S.A - ESP","860002518":"UNILEVER ANDINA COLOMBIA LTDA.",
+  "860005289":"ASCENSORES SCHINDLER DE COLOMBIA S.A.","860074450":"QUALA S.A.",
+  "860002554":"EXXONMOBIL DE COLOMBIA S.A.","860005223":"CHEVRON PETROLEUM COMPANY",
+  "890300546":"COLGATE PALMOLIVE COMPANIA","860039561":"PFIZER S.A.",
+  "860002134":"ABBOTT LABORATORIES DE COLOMBIA S.A.","830039568":"ASTRAZENECA COLOMBIA S.A.S.",
+  "860003216":"PRODUCTOS ROCHE S.A.","800198591":"BRANCH OF MICROSOFT COLOMBIA INC",
+  "830035246":"DELL COLOMBIA INC.","800241958":"HEWLETT PACKARD COLOMBIA LTDA",
+  "830065063":"LG ELECTRONICS COLOMBIA LIMITADA","830028931":"SAMSUNG ELECTRONICS LATINOAMERICA S.A.",
+  "860031028":"SIEMENS SOCIEDAD ANONIMA","860025285":"ERICSSON DE COLOMBIA S.A.",
+  "860002576":"GENERAL DE EQUIPOS DE COLOMBIA S.A GECOLSA","830060331":"KOMATSU COLOMBIA S.A.S.",
+  "890300406":"CARTON DE COLOMBIA S.A.","890301960":"PRODUCTORA DE PAPELES S.A. PROPAL",
+  "890900161":"PRODUCTOS FAMILIA S.A.","860015753":"COLOMBIANA KIMBERLY COLPAPEL S.A.",
+  "830002366":"BIMBO DE COLOMBIA SA","890900535":"KELLOGG DE COLOMBIA S.A.",
+  "890301884":"COLOMBINA S.A.","800242106":"SODIMAC COLOMBIA S.A.",
+  "830067394":"MERCADOLIBRE COLOMBIA LTDA","900480569":"JERONIMO MARTINS COLOMBIA S.A.S.",
+  "900155107":"EASY COLOMBIA S.A.","860013951":"G4S SECURE SOLUTIONS COLOMBIA S.A.",
+  "860350234":"BRINKS DE COLOMBIA S.A.","830025104":"PROSEGUR TECNOLOGIA S.A.S",
 };
+
+const FACTURAS_TEST = [
+  {
+    nombre:"Ferretería (varios ítems)",desc:"Tornillos, puntillas, chazos, cemento",icono:"🔩",color:"#1e3a5f",
+    xml:`<?xml version="1.0" encoding="UTF-8"?><Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2" xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2"><cbc:ID>FE-2026-1047</cbc:ID><cbc:IssueDate>2026-03-02</cbc:IssueDate><cac:AccountingSupplierParty><cac:Party><cac:PartyTaxScheme><cbc:CompanyID>900123456</cbc:CompanyID><cbc:RegistrationName>FERRETERÍA EL CLAVO DORADO S.A.S.</cbc:RegistrationName></cac:PartyTaxScheme></cac:Party></cac:AccountingSupplierParty><cac:TaxTotal><cbc:TaxAmount currencyID="COP">47500</cbc:TaxAmount></cac:TaxTotal><cac:LegalMonetaryTotal><cbc:LineExtensionAmount currencyID="COP">250000</cbc:LineExtensionAmount><cbc:PayableAmount currencyID="COP">297500</cbc:PayableAmount></cac:LegalMonetaryTotal><cac:InvoiceLine><cbc:InvoicedQuantity>100</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="COP">50000</cbc:LineExtensionAmount><cac:Item><cbc:Description>Puntillas 2 pulgadas</cbc:Description></cac:Item></cac:InvoiceLine><cac:InvoiceLine><cbc:InvoicedQuantity>50</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="COP">75000</cbc:LineExtensionAmount><cac:Item><cbc:Description>Tornillos autoperforantes 3/8</cbc:Description></cac:Item></cac:InvoiceLine><cac:InvoiceLine><cbc:InvoicedQuantity>5</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="COP">125000</cbc:LineExtensionAmount><cac:Item><cbc:Description>Cemento gris x 50kg</cbc:Description></cac:Item></cac:InvoiceLine></Invoice>`
+  },
+  {
+    nombre:"Transporte nacional",desc:"Flete terrestre — 10 marzo",icono:"🚛",color:"#1a2d1a",
+    xml:`<?xml version="1.0" encoding="UTF-8"?><Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2" xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2"><cbc:ID>TRP-2026-0312</cbc:ID><cbc:IssueDate>2026-03-10</cbc:IssueDate><cac:AccountingSupplierParty><cac:Party><cac:PartyTaxScheme><cbc:CompanyID>800234567</cbc:CompanyID><cbc:RegistrationName>TRANSPORTES RÁPIDOS DEL NORTE LTDA.</cbc:RegistrationName></cac:PartyTaxScheme></cac:Party></cac:AccountingSupplierParty><cac:TaxTotal><cbc:TaxAmount currencyID="COP">0</cbc:TaxAmount></cac:TaxTotal><cac:LegalMonetaryTotal><cbc:LineExtensionAmount currencyID="COP">850000</cbc:LineExtensionAmount><cbc:PayableAmount currencyID="COP">850000</cbc:PayableAmount></cac:LegalMonetaryTotal><cac:InvoiceLine><cbc:InvoicedQuantity>1</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="COP">850000</cbc:LineExtensionAmount><cac:Item><cbc:Description>Flete terrestre Bogotá-Medellín 500kg</cbc:Description></cac:Item></cac:InvoiceLine></Invoice>`
+  },
+  {
+    nombre:"Honorarios profesional",desc:"Asesoría contable — 15 marzo",icono:"👨‍💼",color:"#1a1a2e",
+    xml:`<?xml version="1.0" encoding="UTF-8"?><Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2" xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2"><cbc:ID>HON-2026-0089</cbc:ID><cbc:IssueDate>2026-03-15</cbc:IssueDate><cac:AccountingSupplierParty><cac:Party><cac:PartyTaxScheme><cbc:CompanyID>79654321</cbc:CompanyID><cbc:RegistrationName>CARLOS ANDRÉS GÓMEZ REYES</cbc:RegistrationName></cac:PartyTaxScheme></cac:Party></cac:AccountingSupplierParty><cac:TaxTotal><cbc:TaxAmount currencyID="COP">0</cbc:TaxAmount></cac:TaxTotal><cac:LegalMonetaryTotal><cbc:LineExtensionAmount currencyID="COP">2000000</cbc:LineExtensionAmount><cbc:PayableAmount currencyID="COP">2000000</cbc:PayableAmount></cac:LegalMonetaryTotal><cac:InvoiceLine><cbc:InvoicedQuantity>1</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="COP">2000000</cbc:LineExtensionAmount><cac:Item><cbc:Description>Honorarios revisoría fiscal y asesoría contable mayo 2026</cbc:Description></cac:Item></cac:InvoiceLine></Invoice>`
+  },
+  {
+    nombre:"Bayer S.A. (autorretenedor)",desc:"NIT 860001942 — 20 marzo",icono:"🔒",color:"#2d1a00",
+    xml:`<?xml version="1.0" encoding="UTF-8"?><Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2" xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2"><cbc:ID>BAYER-FV-20260320</cbc:ID><cbc:IssueDate>2026-03-20</cbc:IssueDate><cac:AccountingSupplierParty><cac:Party><cac:PartyTaxScheme><cbc:CompanyID>860001942</cbc:CompanyID><cbc:RegistrationName>BAYER S.A.</cbc:RegistrationName></cac:PartyTaxScheme></cac:Party></cac:AccountingSupplierParty><cac:TaxTotal><cbc:TaxAmount currencyID="COP">285000</cbc:TaxAmount></cac:TaxTotal><cac:LegalMonetaryTotal><cbc:LineExtensionAmount currencyID="COP">1500000</cbc:LineExtensionAmount><cbc:PayableAmount currencyID="COP">1785000</cbc:PayableAmount></cac:LegalMonetaryTotal><cac:InvoiceLine><cbc:InvoicedQuantity>10</cbc:InvoicedQuantity><cbc:LineExtensionAmount currencyID="COP">1500000</cbc:LineExtensionAmount><cac:Item><cbc:Description>Productos farmacéuticos</cbc:Description></cac:Item></cac:InvoiceLine></Invoice>`
+  },
+];
+
+function limpiarXml(xmlText) {
+  if (!xmlText) return "";
+  return xmlText
+    .replace(/^\uFEFF/, "")
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F\uD800-\uDFFF]/g, "");
+}
+
+function parseXMLFactura(xmlText) {
+  try {
+    let clean = limpiarXml(xmlText);
+    let doc = new DOMParser().parseFromString(clean, "text/xml");
+    // Si falla, intentar sin declaración XML (encoding incorrecto)
+    if (doc.querySelector("parsererror")) {
+      doc = new DOMParser().parseFromString(clean.replace(/<\?xml[^?]*\?>/i, ""), "text/xml");
+    }
+    if (doc.querySelector("parsererror")) throw new Error("XML malformado o no es una factura DIAN válida");
+    const get = tag => doc.getElementsByTagNameNS("*",tag)[0]?.textContent?.trim()||"";
+    const supplier = doc.getElementsByTagNameNS("*","AccountingSupplierParty")[0];
+    const gf = (node,tag) => node?.getElementsByTagNameNS("*",tag)[0]?.textContent?.trim()||"";
+    const items = Array.from(doc.getElementsByTagNameNS("*","InvoiceLine")).map(l=>({
+      descripcion: l.getElementsByTagNameNS("*","Description")[0]?.textContent?.trim()||"",
+      cantidad: parseFloat(l.getElementsByTagNameNS("*","InvoicedQuantity")[0]?.textContent||"1"),
+      valor: parseFloat(l.getElementsByTagNameNS("*","LineExtensionAmount")[0]?.textContent||"0"),
+    }));
+    // Subtotal desde LegalMonetaryTotal (no de la primera InvoiceLine)
+    const monetary = doc.getElementsByTagNameNS("*","LegalMonetaryTotal")[0];
+    const gm = tag => monetary?.getElementsByTagNameNS("*",tag)[0]?.textContent?.trim()||"";
+    // IVA: suma de todos los TaxTotal
+    const totalIva = Array.from(doc.getElementsByTagNameNS("*","TaxTotal"))
+      .reduce((s,t) => s + parseFloat(t.getElementsByTagNameNS("*","TaxAmount")[0]?.textContent||"0"), 0);
+    return {
+      prefijo:get("ID"), fecha:get("IssueDate"),
+      nitProveedor:gf(supplier,"CompanyID")||get("CompanyID"),
+      razonSocial:gf(supplier,"RegistrationName")||get("RegistrationName"),
+      direccion:gf(supplier,"Line"), ciudad:gf(supplier,"CityName"), departamento:gf(supplier,"CountrySubentity"),
+      subtotal:parseFloat(gm("LineExtensionAmount")||get("LineExtensionAmount")||"0"),
+      totalIva,
+      total:parseFloat(gm("PayableAmount")||get("PayableAmount")||"0"),
+      items,
+    };
+  } catch { return null; }
+}
+
+async function callAPI(body) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 45000);
+  try {
+    const res = await fetch("/api/claude", { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body), signal:controller.signal });
+    clearTimeout(timeout);
+    if (!res.ok) throw new Error("Error del servidor: " + res.status);
+    return await res.json();
+  } catch(e) { clearTimeout(timeout); if(e.name==="AbortError") throw new Error("Tiempo agotado. Intenta de nuevo."); throw e; }
+}
+
+async function parsePDFFactura(archivo) {
+  if (archivo.size > 10 * 1024 * 1024) throw new Error("El PDF supera 10 MB");
+  const base64 = await new Promise((res,rej)=>{
+    const r = new FileReader();
+    r.onload = ()=>res(r.result.split(",")[1]);
+    r.onerror = ()=>rej(new Error("No se pudo leer el PDF"));
+    r.readAsDataURL(archivo);
+  });
+  const res = await fetch("/api/claude",{
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({
+      model:"claude-3-5-sonnet-20241022", max_tokens:1500,
+      messages:[{role:"user",content:[
+        {type:"document",source:{type:"base64",media_type:"application/pdf",data:base64}},
+        {type:"text",text:`Lee esta factura y extrae los datos. Responde SOLO JSON sin markdown.\nFormato:\n{"prefijo":"","fecha":"YYYY-MM-DD","nitProveedor":"solo números","razonSocial":"","direccion":"","ciudad":"","departamento":"","subtotal":0,"totalIva":0,"total":0,"items":[{"descripcion":"","cantidad":1,"valor":0}]}`}
+      ]}]
+    })
+  });
+  const data = await res.json();
+  const text = data.content?.map(b=>b.text||"").join("").replace(/```json|```/g,"").trim();
+  return JSON.parse(text);
+}
+
+async function analizarConIA(datos, tratamiento, tratIva) {
+  const itemsTexto = datos.items?.length
+    ? datos.items.map(i=>`- Cant ${i.cantidad} | ${i.descripcion} | $${i.valor.toLocaleString("es-CO")}`).join("\n")
+    : "(sin ítems)";
+  const instrTratamiento = tratamiento==="inventario"
+    ? `TRATAMIENTO = INVENTARIO: conserva cada ítem por separado. Cuenta principal: 14350501. Una línea por ítem.`
+    : `TRATAMIENTO = COSTO/GASTO: resume todos los ítems en UN solo concepto. Cuenta principal 6135x o 613x según tipo.`;
+
+  // Cargar auxiliares completos de la empresa desde Supabase
+  let retencionesPrompt = "23654035=2.5% compras | 23652501=1% transporte | 23652504=4% servicios | 23651511=11% honorarios";
+  let pucAuxPrompt = ""; // PUC auxiliares de la empresa para el prompt
+  try {
+    const empId = await getEmpresaId();
+    if (empId) {
+      const auxs = await getAuxiliaresConTarifa(empId);
+      // Retenciones — cuentas 23x con tarifa
+      const retAuxs = auxs.filter(a => parseFloat(a.tarifa)>0 && String(a.codigo).startsWith('23'));
+      if (retAuxs.length > 0) {
+        retencionesPrompt = retAuxs.map(a => a.codigo+'='+a.tarifa+'% '+a.nombre).join(" | ");
+        console.log("Retenciones desde Supabase:", retencionesPrompt);
+      }
+      // Auxiliares completos para el prompt — ordenados por código
+      if (auxs.length > 0) {
+        pucAuxPrompt = auxs
+          .sort((a,b)=>String(a.codigo).localeCompare(String(b.codigo)))
+          .map(a=>a.codigo+'\t'+a.nombre)
+          .join('\n');
+        console.log("Auxiliares empresa cargados:", auxs.length);
+      }
+    }
+  } catch(e) { console.warn("Sin auxiliares Supabase, usando PUC genérico:", e); }
+  // PUC final: SOLO auxiliares de empresa si existen, sino PUC genérico
+  const pucFinal = pucAuxPrompt
+    ? pucAuxPrompt
+    : PUC_EMPRESA;
+  const instrPUC = pucAuxPrompt
+    ? `CUENTAS DE LA EMPRESA — OBLIGATORIO usar SOLO estas cuentas (${pucAuxPrompt.split('\n').length} auxiliares):
+REGLA ESTRICTA: Si la cuenta que necesitas existe en esta lista, DEBES usarla. PROHIBIDO usar otras cuentas.
+Si no encuentras la cuenta exacta, usa la más cercana de esta lista. NUNCA inventes códigos.
+${pucFinal}`
+    : `PUC ESTÁNDAR:
+${pucFinal}`;
+
+  const prompt = `Eres contador colombiano experto en PUC. Analiza la factura y devuelve SOLO JSON válido.
+
+FACTURA:
+Proveedor: ${datos.razonSocial} | NIT: ${datos.nitProveedor} | Fecha: ${datos.fecha}
+Ítems:
+${itemsTexto}
+Subtotal: $${datos.subtotal?.toLocaleString("es-CO")} | IVA: $${datos.totalIva?.toLocaleString("es-CO")} | Total: $${datos.total?.toLocaleString("es-CO")}
+
+${instrPUC}
+
+${instrTratamiento}
+
+RETENCIONES — usa solo cuentas del PUC con sus tarifas parametrizadas:
+\${retencionesPrompt}
+
+IVA:
+${tratIva==="descontable"
+  ? "→ cuenta IVA = 24081010, nombre = Iva compras"
+  : "→ detecta automáticamente: si compras/bienes físicos usa 61157001 (Iva transitorio compras), si servicios usa 61157002 (Iva de servicios)"}
+
+FORMATO JSON:
+{
+  "concepto_general": "max 80 chars",
+  "tipo_cuenta": "Inventario|Costo|Gasto",
+  "retefuente_pct": número,
+  "retefuente_descripcion": "texto",
+  "cuenta_retefuente_codigo": "código",
+  "cuenta_retefuente_nombre": "nombre",
+  "retica_por_mil": número,
+  "advertencia_puc": "",
+  "cuenta_iva_codigo": "código",
+  "cuenta_iva_nombre": "nombre",
+  "lineas_contables": [{"descripcion":"","cantidad":1,"valor_base":0,"cuenta_debito_codigo":"","cuenta_debito_nombre":"","sin_cuenta_exacta":false}]
+}`;
+  const res = await fetch("/api/claude",{
+    method:"POST", headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({model:"claude-3-5-sonnet-20241022",max_tokens:2000,messages:[{role:"user",content:prompt}]}),
+  });
+  const data = await res.json();
+  const text = data.content?.map(b=>b.text||"").join("").replace(/```json|```/g,"").trim();
+  return JSON.parse(text);
+}
+
+function generarFilasContables(factura, docNum, config) {
+  const { tpcCod, prfCod, ctoCod } = config;
+  const fecha = factura.fecha || "";
+  const nit   = factura.nitProveedor || "";
+  // DocAux = número de factura del proveedor (prefijo del XML)
+  const docAuxReal = factura.prefijo || factura.numeroFactura || config.docAux || "";
+  const filas = [];
+  const fila = (plnCod, docDet, deb, cre) => ({
+    DocNum: tpcCod+"-"+String(docNum).padStart(3,"0"), DocFec: fecha, TpcCod: tpcCod,
+    PlnCod: plnCod, DocDet: docDet, TerNit: nit, CtoCod: ctoCod,
+    DocDeb: deb || "", DocCre: cre || "",
+    PrfCod: prfCod, DocAux: docAuxReal, SubCto: "",
+  });
+  const asiento = factura.asiento;
+  if (asiento?.length) {
+    asiento.forEach(r => {
+      filas.push(fila(r.cuenta, r.descripcion,
+        r.tipo==="debito" ? r.valor : "",
+        r.tipo==="credito" ? r.valor : ""
+      ));
+    });
+  } else {
+    const ia = factura.ia;
+    if (!ia) return filas;
+    ia.lineas_contables?.forEach(l => filas.push(fila(l.cuenta_debito_codigo, l.descripcion, l.valor_base, "")));
+    if (factura.totalIva>0 && ia.cuenta_iva_codigo) filas.push(fila(ia.cuenta_iva_codigo, ia.cuenta_iva_nombre, factura.totalIva, ""));
+    const rete = factura.esAutorretenedor?0:(factura.retefuente||0);
+    if (rete>0) filas.push(fila(ia.cuenta_retefuente_codigo, ia.retefuente_descripcion, "", rete));
+    if (factura.retica>0) filas.push(fila("13551801","Retención industria y comercio","",factura.retica));
+    const neto = (factura.total||0)-rete-(factura.retica||0);
+    filas.push(fila("22050101",`Proveedor ${factura.razonSocial||""}`.slice(0,60),"",neto));
+  }
+  return filas;
+}
+
+async function enviarAContaFlex(aprobadas) {
+  // Leer año activo desde Supabase
+  const empresaId = await getEmpresaId();
+  const anioActivo = await getAnioActivoEmpresa(empresaId);
+
+  // Validar que todas las facturas correspondan al año activo
+  const facturasFueraDeAnio = aprobadas.filter(f => {
+    const anioFactura = String((f.fecha||'').slice(0,4));
+    return anioFactura && anioFactura !== String(anioActivo);
+  });
+
+  if (facturasFueraDeAnio.length > 0) {
+    const detalle = facturasFueraDeAnio.map(f =>
+      `• ${f.razonSocial||f.nitProveedor} — Fecha: ${f.fecha} (año ${(f.fecha||'').slice(0,4)})`
+    ).join('\n');
+    const continuar = confirm(
+      `⚠ ADVERTENCIA — Año de trabajo activo en ContaFlex: ${anioActivo}\n\n` +
+      `Las siguientes facturas tienen fechas de otro año:\n${detalle}\n\n` +
+      `¿Desea enviarlas de todas formas?`
+    );
+    if (!continuar) return null;
+  }
+
+  // Construir array de comprobantes en formato ContaFlex
+  const comprobantes = aprobadas.map(f => {
+    const ia = f.ia || {};
+    const lineas = [];
+    // Líneas de gasto/costo
+    (ia.lineas_contables||[]).forEach(l => {
+      lineas.push({
+        cuenta: l.cuenta_debito_codigo,
+        debito: l.valor_base,
+        credito: 0,
+        detalle: l.descripcion,
+        tercero_nit: f.nitProveedor||'',
+        tercero_nombre: f.razonSocial||''
+      });
+    });
+    // IVA
+    if (f.totalIva>0 && ia.cuenta_iva_codigo) {
+      lineas.push({ cuenta: ia.cuenta_iva_codigo, debito: f.totalIva, credito:0, detalle: ia.cuenta_iva_nombre||'IVA', tercero_nit:f.nitProveedor||'', tercero_nombre:f.razonSocial||'' });
+    }
+    // Retención
+    const rete = f.esAutorretenedor?0:(f.retefuente||0);
+    if (rete>0 && ia.cuenta_retefuente_codigo) {
+      lineas.push({ cuenta: ia.cuenta_retefuente_codigo, debito:0, credito: rete, detalle: ia.retefuente_descripcion||'Ret. fuente', tercero_nit:f.nitProveedor||'', tercero_nombre:f.razonSocial||'' });
+    }
+    // CxP proveedor
+    const neto = (f.total||0) - rete - (f.retica||0);
+    lineas.push({ cuenta:'22050101', debito:0, credito: neto, detalle:'CxP '+( f.razonSocial||'').slice(0,40), tercero_nit:f.nitProveedor||'', tercero_nombre:f.razonSocial||'' });
+
+    return {
+      tipo_doc: 'CO',
+      fecha: f.fecha||new Date().toISOString().slice(0,10),
+      anio_contable: anioActivo,
+      concepto: ia.concepto_general || ('Factura '+f.razonSocial||''),
+      nit: f.nitProveedor||'',
+      beneficiario: f.razonSocial||'',
+      tercero_nit: f.nitProveedor||'',
+      tercero_nombre: f.razonSocial||'',
+      neto_pagar: neto,
+      valor_bruto: f.total||0,
+      detalles: JSON.stringify(lineas),
+      _lineas: lineas, // para previsualización
+      _ia: ia,
+    };
+  });
+
+  // Guardar en localStorage para que ContaFlex lo lea
+  localStorage.setItem('cf_ia_comprobantes', JSON.stringify(comprobantes));
+  localStorage.setItem('cf_ia_timestamp', Date.now().toString());
+  alert(`✓ ${comprobantes.length} comprobante(s) enviados a ContaFlex.\nVaya a ContaFlex → Causación → botón "📥 Importar desde IA"`);
+  console.log('ContaFlex IA comprobantes:', comprobantes);
+  return aprobadas; // retornar para que App actualice estado
+}
+
+function exportarExcel(facturas, config, soloUna = null) {
+  const lista = [...(soloUna ? [soloUna] : facturas)]
+    .filter(f => f.aprobado && !f.error)
+    .sort((a, b) => (a.fecha || "").localeCompare(b.fecha || ""));
+  const headers = ["DocNum","DocFec","TpcCod","PlnCod","DocDet","TerNit","CtoCod","DocDeb","DocCre","PrfCod","DocAux","SubCto"];
+  const rows = [headers];
+  let consecutivo = parseInt(config.docNumInicio) || 1;
+  lista.forEach(f => {
+    const filas = generarFilasContables(f, consecutivo, config);
+    filas.forEach(r => rows.push(headers.map(h => r[h] ?? "")));
+    consecutivo++;
+  });
+  const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g,'""')}"`).join(",")).join("\n");
+  const a = document.createElement("a");
+  a.href = "data:text/csv;charset=utf-8,%EF%BB%BF" + encodeURIComponent(csv);
+  a.download = soloUna
+    ? `comprobante_${soloUna.prefijo || soloUna.nitProveedor || "factura"}.csv`
+    : `comprobante_todas_${config.tpcCod}_desde_${config.docNumInicio}.csv`;
+  a.click();
+}
+
+function exportarTerceros(facturas) {
+  // Deduplicar por NIT
+  const mapa = {};
+  facturas.filter(f=>!f.error&&f.nitProveedor).forEach(f=>{
+    const nit = (f.nitProveedor||'').replace(/[^0-9]/g,'');
+    if(!nit) return;
+    if(!mapa[nit]) mapa[nit] = f;
+  });
+  const lista = Object.values(mapa);
+  if(!lista.length){ alert('No hay proveedores para exportar'); return; }
+
+  const headers = [
+    'TipoPersona','TipoDoc','Numero','DV','PrimerApellido','SegundoApellido',
+    'PrimerNombre','OtrosNombres','RazonSocial','NombreComercial',
+    'CodDepartamento','NombreDepartamento','CodMunicipio','NombreMunicipio',
+    'Direccion','CorreoPrincipal','CorreoFacturacion','Celular','Telefono',
+    'Regimen','ResponsableIVA','GranContribuyente','Autorretenedor',
+    'AgenteRetencionIVA','CIIU','ResponsabilidadesDIAN','Tipos',
+    'EsCliente','EsProveedor','EsEmpleado','Estado'
+  ];
+
+  const rows = [headers];
+  lista.forEach(f => {
+    const nit = (f.nitProveedor||'').replace(/[^0-9]/g,'');
+    const esAuto = f.esAutorretenedor ? 'SI' : 'NO';
+    // Detectar tipo persona: NIT empresa (9 díg) vs cédula persona natural
+    const esEmpresa = nit.length >= 9;
+    // Calcular DV si es NIT
+    let dv = '';
+    if(esEmpresa && nit.length === 9) {
+      const pesos = [3,7,13,17,19,23,29,37,41,43,47,53,59,67,71];
+      const digits = nit.split('').reverse();
+      let suma = 0;
+      digits.forEach((d,i) => { suma += parseInt(d) * pesos[i]; });
+      const mod = suma % 11;
+      dv = String(mod > 1 ? 11 - mod : mod);
+    }
+    rows.push([
+      esEmpresa ? '2' : '1',          // TipoPersona: 1=Natural, 2=Jurídica
+      esEmpresa ? '31' : '13',        // TipoDoc: 31=NIT, 13=Cédula
+      nit,                             // Numero
+      dv,                              // DV
+      '',                              // PrimerApellido
+      '',                              // SegundoApellido
+      '',                              // PrimerNombre
+      '',                              // OtrosNombres
+      esEmpresa ? (f.razonSocial||'') : '', // RazonSocial
+      '',                              // NombreComercial
+      '',                              // CodDepartamento
+      f.departamento||'',              // NombreDepartamento
+      '',                              // CodMunicipio
+      f.ciudad||'',                    // NombreMunicipio
+      f.direccion||'',                 // Direccion
+      '',                              // CorreoPrincipal
+      '',                              // CorreoFacturacion
+      '',                              // Celular
+      '',                              // Telefono
+      esEmpresa ? 'RESPONSABLE_IVA' : 'NO_RESPONSABLE', // Regimen
+      esEmpresa ? 'SI' : 'NO',        // ResponsableIVA
+      'NO',                            // GranContribuyente
+      esAuto,                          // Autorretenedor
+      'NO',                            // AgenteRetencionIVA
+      '',                              // CIIU
+      esEmpresa ? 'O-13;O-15;O-23;O-47' : 'R-99-PN', // ResponsabilidadesDIAN
+      'PROVEEDOR',                     // Tipos
+      'NO',                            // EsCliente
+      'SI',                            // EsProveedor
+      'NO',                            // EsEmpleado
+      'ACTIVO',                        // Estado
+    ]);
+  });
+
+  const csv = rows.map(r => r.map(c => '"' + String(c).replace(/"/g,'""') + '"').join(',')).join('\n');
+  const a = document.createElement('a');
+  a.href = 'data:text/csv;charset=utf-8,%EF%BB%BF' + encodeURIComponent(csv);
+  a.download = `Terceros_ContaFlex_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  console.log('Terceros exportados:', lista.length, lista.map(f=>f.nitProveedor+'|'+f.razonSocial));
+}
+
+function CeldaEditable({ valor, onChange, tipo="text", style={} }) {
+  const [editando, setEditando] = useState(false);
+  const [tmp, setTmp] = useState(valor);
+  const confirmar = () => { onChange(tipo==="number"?parseFloat(tmp)||0:tmp); setEditando(false); };
+  if (editando) return (
+    <input autoFocus type={tipo} value={tmp}
+      onChange={e=>setTmp(e.target.value)}
+      onBlur={confirmar}
+      onKeyDown={e=>{ if(e.key==="Enter") confirmar(); if(e.key==="Escape") setEditando(false); }}
+      style={{background:"#0d101a",border:"1px solid #4f7cff",color:"#e2e8f0",borderRadius:4,padding:"2px 6px",fontFamily:"'IBM Plex Mono',monospace",fontSize:11,width:"100%",outline:"none",...style}}
+    />
+  );
+  return (
+    <span onClick={()=>{ setTmp(valor); setEditando(true); }} title="Clic para editar"
+      style={{cursor:"pointer",borderBottom:"1px dashed #2d3352",paddingBottom:1,...style}}
+    >{valor}</span>
+  );
+}
+
+function AnioActivoBadge() {
+  const [anio, setAnio] = React.useState(null);
+  const [empresaNombre, setEmpresaNombre] = React.useState('');
+  React.useEffect(()=>{
+    (async()=>{
+      const empId = await getEmpresaId();
+      const a = await getAnioActivoEmpresa(empId);
+      setAnio(a);
+      // Leer nombre empresa desde sesión
+      try {
+        const s = localStorage.getItem('eg_session');
+        if(s){ const o=JSON.parse(s); setEmpresaNombre(o.empresaNombre||''); }
+      } catch(e){}
+    })();
+  },[]);
+  if(!anio) return null;
+  return (
+    <div style={{display:'flex',alignItems:'center',gap:8,background:'rgba(201,168,76,0.1)',border:'1px solid rgba(201,168,76,0.3)',borderRadius:8,padding:'8px 14px',marginTop:10}}>
+      <span style={{fontSize:16}}>📅</span>
+      <div>
+        <div style={{fontSize:11,color:'#c9a84c',fontWeight:700}}>Año de trabajo activo en ContaFlex</div>
+        <div style={{fontSize:13,color:'#fff',fontWeight:700,fontFamily:"'IBM Plex Mono',monospace"}}>{anio} {empresaNombre&&<span style={{fontSize:11,color:'#94a3b8',fontWeight:400}}>· {empresaNombre}</span>}</div>
+      </div>
+    </div>
+  );
+}
+
+function ModalExport({ facturas, onClose }) {
+  const aprobadas = facturas.filter(f => f.aprobado && !f.error).sort((a, b) => (a.fecha || "").localeCompare(b.fecha || ""));
+  const [cfg, setCfg] = useState({ docNumInicio: "1", tpcCod: "CO", prfCod: "", docAux: "", ctoCod: "" });
+  const set = (k, v) => setCfg(p => ({ ...p, [k]: v }));
+  const preview = aprobadas.map((f, i) => ({ ...f, docNumAsignado: (parseInt(cfg.docNumInicio) || 1) + i }));
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.85)",zIndex:2000,display:"flex",alignItems:"center",justifyContent:"center",padding:16,overflowY:"auto"}}>
+      <div style={{background:"#161923",border:"1px solid #232840",borderRadius:16,padding:28,maxWidth:680,width:"100%"}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:20}}>
+          <div>
+            <div style={{fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:700,fontSize:17,color:"#fff"}}>⬇ Exportar comprobante contable</div>
+            <div style={{fontSize:11,color:"#64748b",marginTop:2}}>{aprobadas.length} facturas aprobadas · ordenadas por fecha</div>
+      <AnioActivoBadge/>
+          </div>
+          <button onClick={onClose} style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",borderRadius:6,padding:"4px 10px",cursor:"pointer",fontSize:12,fontFamily:"inherit"}}>✕ Cerrar</button>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:20}}>
+          {[
+            {k:"docNumInicio", label:"DocNum — Consecutivo inicial", ph:"Ej: 29", help:"La app suma +1 por cada factura en orden de fecha"},
+            {k:"tpcCod", label:"TpcCod — Tipo de documento", ph:"Ej: CO", help:"Código del comprobante en tu software contable"},
+            {k:"prfCod", label:"PrfCod — Prefijo", ph:"Ej: COMP", help:"Prefijo del comprobante"},
+            {k:"ctoCod", label:"CtoCod — Centro de costo", ph:"Ej: CC001", help:"Código del centro de costo o proyecto"},
+            {k:"docAux", label:"DocAux — Auxiliar / Referencia", ph:"Ej: OC-2026-01", help:"Referencia adicional (opcional)"},
+          ].map(({k,label,ph,help})=>(
+            <div key={k}>
+              <div style={{fontSize:10,color:"#64748b",textTransform:"uppercase",letterSpacing:".07em",marginBottom:4}}>{label}</div>
+              <input value={cfg[k]} onChange={e=>set(k,e.target.value)} placeholder={ph}
+                style={{width:"100%",background:"#0f1117",border:"1px solid #2d3352",color:"#e2e8f0",borderRadius:6,padding:"7px 10px",fontFamily:"'IBM Plex Mono',monospace",fontSize:12,outline:"none"}} />
+              <div style={{fontSize:10,color:"#475569",marginTop:3}}>{help}</div>
+            </div>
+          ))}
+        </div>
+        <div style={{marginBottom:18}}>
+          <div style={{fontSize:11,color:"#64748b",fontWeight:600,textTransform:"uppercase",letterSpacing:".07em",marginBottom:8}}>Vista previa — orden por fecha y consecutivo asignado</div>
+          <div style={{background:"#0d101a",borderRadius:8,border:"1px solid #1e2235",overflow:"hidden"}}>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+              <thead>
+                <tr style={{background:"#131620"}}>
+                  {["DocNum","Fecha","Proveedor","N° Factura","Total","Neto a pagar"].map(h=>(
+                    <th key={h} style={{padding:"7px 10px",color:"#475569",fontSize:10,fontWeight:600,textAlign:"left",borderBottom:"1px solid #1e2235"}}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {preview.length === 0 ? (
+                  <tr><td colSpan={6} style={{padding:"14px",color:"#475569",textAlign:"center"}}>Sin facturas aprobadas</td></tr>
+                ) : preview.map((f,i)=>(
+                  <tr key={f.id} style={{borderBottom:"1px solid #1e2235",background:i%2===0?"transparent":"#0a0d14"}}>
+                    <td style={{padding:"7px 10px"}}><span style={{background:"#1e2a3a",color:"#60a5fa",padding:"2px 8px",borderRadius:4,fontFamily:"monospace",fontWeight:700}}>{cfg.tpcCod} {f.docNumAsignado}</span></td>
+                    <td style={{padding:"7px 10px",color:"#94a3b8"}}>{f.fecha}</td>
+                    <td style={{padding:"7px 10px",color:"#cbd5e1",maxWidth:160,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{f.razonSocial}</td>
+                    <td style={{padding:"7px 10px",color:"#64748b",fontFamily:"monospace"}}>{f.prefijo}</td>
+                    <td style={{padding:"7px 10px",color:"#4ade80",fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:600}}>${(f.total||0).toLocaleString("es-CO")}</td>
+                    <td style={{padding:"7px 10px",color:"#fbbf24",fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:600}}>
+                      ${((f.total||0)-(f.retefuente||0)-(f.retica||0)).toLocaleString("es-CO")}
+                      {f.retefuente_aplica&&!f.retefuente_aplica.aplica&&<span title={"No supera base mínima: $"+(f.retefuente_aplica.baseMin||0).toLocaleString("es-CO")} style={{marginLeft:6,fontSize:10,background:"rgba(251,191,36,0.15)",color:"#fbbf24",padding:"1px 5px",borderRadius:4,cursor:"help"}}>sin rete</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div style={{borderTop:"1px solid #1e2235",paddingTop:16,display:"flex",gap:10,flexWrap:"wrap",justifyContent:"flex-end"}}>
+          <div style={{fontSize:11,color:"#475569",alignSelf:"center",flex:1}}>Formato CSV · compatible con Excel e importación contable</div>
+          <div style={{display:"flex",flexDirection:"column",gap:6,maxHeight:140,overflowY:"auto",border:"1px solid #1e2235",borderRadius:6,padding:"6px 8px",minWidth:200}}>
+            <div style={{fontSize:10,color:"#64748b",fontWeight:600,marginBottom:2}}>📄 Descargar por factura:</div>
+            {preview.map(f=>(
+              <button key={f.id} onClick={()=>exportarExcel(facturas, cfg, f)}
+                style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",borderRadius:5,padding:"3px 10px",cursor:"pointer",fontSize:10,fontFamily:"inherit",textAlign:"left",whiteSpace:"nowrap"}}>
+                ⬇ {cfg.tpcCod}{f.docNumAsignado} · {f.razonSocial?.slice(0,20)}
+              </button>
+            ))}
+          </div>
+          <button onClick={()=>exportarExcel(facturas, cfg)} disabled={aprobadas.length===0}
+            style={{background:aprobadas.length?"#4f7cff":"#1e2235",color:aprobadas.length?"#fff":"#475569",border:"none",borderRadius:8,padding:"10px 22px",cursor:aprobadas.length?"pointer":"not-allowed",fontSize:13,fontWeight:700,fontFamily:"inherit"}}>
+            ⬇ Descargar TODAS ({aprobadas.length})
+          </button>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginLeft:16,paddingLeft:16,borderLeft:"1px solid #232840"}}>
+            <div style={{fontSize:12,color:tablaBases.length?"#4ade80":"#f87171",fontWeight:600}}>
+              {tablaBases.length?"✓ "+tablaBases.length+" reglas de retención":"⚠ Sin bases de retención"}
+            </div>
+            <input ref={inputBasesRef} type="file" accept=".xlsx,.xls" onChange={cargarExcelBases} style={{display:"none"}}/>
+            <button onClick={()=>inputBasesRef.current?.click()}
+              style={{background:"#1e2235",color:"#94a3b8",border:"1px solid #2d3352",borderRadius:8,padding:"6px 14px",cursor:"pointer",fontSize:12,fontWeight:600}}>
+              📋 {tablaBases.length?"Actualizar bases":"Cargar bases retención"}
+            </button>
+          </div>
+          <button onClick={async()=>{
+            const enviadas = await enviarAContaFlex(aprobadas);
+            if(enviadas) {
+              const nuevasSubidas = [...subidas, ...aprobadas.map(f=>({...f,fechaSubida:new Date().toISOString().slice(0,10)}))];
+              guardarSubidas(nuevasSubidas);
+              setFacturas(p=>p.filter(f=>!f.aprobado||f.error));
+            }
+          }} disabled={aprobadas.length===0}
+            style={{background:aprobadas.length?"#e8b84b":"#1e2235",color:aprobadas.length?"#0f1f3d":"#475569",border:"none",borderRadius:8,padding:"10px 22px",cursor:aprobadas.length?"pointer":"not-allowed",fontSize:13,fontWeight:700,fontFamily:"inherit",marginLeft:8}}>
+            ↗ Enviar a ContaFlex ({aprobadas.length})
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ModalTratamiento({ archivos, onConfirm, onCancel }) {
+  const [tratamiento, setTratamiento] = useState(null);
+  const [tratIva, setTratIva] = useState(null);
+  const listo = tratamiento && tratIva;
+  return (
+    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.85)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:16,overflowY:"auto"}}>
+      <div style={{background:"#161923",border:"1px solid #232840",borderRadius:16,padding:28,maxWidth:560,width:"100%"}}>
+        <div style={{textAlign:"center",marginBottom:22}}>
+          <div style={{fontSize:28,marginBottom:8}}>📋</div>
+          <div style={{fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:700,fontSize:17,color:"#fff",marginBottom:4}}>¿Cómo se contabiliza esta factura?</div>
+          <div style={{fontSize:11,color:"#64748b"}}>{archivos.length===1?`📄 ${archivos[0].name}`:`${archivos.length} archivos`}</div>
+        </div>
+        <div style={{marginBottom:18}}>
+          <div style={{fontSize:10,color:"#64748b",fontWeight:600,textTransform:"uppercase",letterSpacing:".08em",marginBottom:8}}>Paso 1 — Tratamiento</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+            {[
+              {key:"inventario",icono:"📦",titulo:"Inventario",desc:"Ítem por ítem · cta 1435",ejemplos:["Cemento → 14350501","Tornillos → 14350501"],color:"#1e3a5f",borde:"#3b6fd4"},
+              {key:"gasto",icono:"📉",titulo:"Costo / Gasto",desc:"Concepto resumido · cta 6135",ejemplos:["Ferretería → 61350501","Flete → 61305001"],color:"#2d1b4e",borde:"#8b5cf6"},
+            ].map(op=>(
+              <button key={op.key} onClick={()=>setTratamiento(op.key)}
+                style={{background:tratamiento===op.key?op.color:"#0f1117",border:`2px solid ${tratamiento===op.key?op.borde:"#232840"}`,borderRadius:10,padding:"13px",cursor:"pointer",textAlign:"left",transition:"all .15s"}}>
+                <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:5}}>
+                  <span style={{fontSize:18}}>{op.icono}</span>
+                  <span style={{fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:700,fontSize:13,color:"#fff"}}>{op.titulo}</span>
+                  {tratamiento===op.key&&<span style={{marginLeft:"auto",color:op.borde}}>✓</span>}
+                </div>
+                <div style={{fontSize:11,color:"#94a3b8",marginBottom:6}}>{op.desc}</div>
+                {op.ejemplos.map(e=><div key={e} style={{fontSize:10,color:tratamiento===op.key?op.borde:"#475569",fontFamily:"monospace"}}>› {e}</div>)}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div style={{marginBottom:18}}>
+          <div style={{fontSize:10,color:"#64748b",fontWeight:600,textTransform:"uppercase",letterSpacing:".08em",marginBottom:8}}>Paso 2 — Tratamiento del IVA</div>
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            {[
+              {key:"descontable",icono:"🔄",titulo:"IVA descontable",desc:"Se lleva al activo (24081010). Para empresas con IVA generado.",cuenta:"24081010",color:"#1e3a5f",borde:"#3b6fd4"},
+              {key:"gasto",icono:"📉",titulo:"IVA al gasto — consorcio / contrato",desc:"Sin IVA generado. La IA detecta: compras → 61157001 · servicios → 61157002.",cuenta:"61157001 / 61157002",color:"#1a2d1a",borde:"#22c55e"},
+            ].map(op=>(
+              <button key={op.key} onClick={()=>setTratIva(op.key)}
+                style={{background:tratIva===op.key?op.color:"#0f1117",border:`2px solid ${tratIva===op.key?op.borde:"#232840"}`,borderRadius:9,padding:"11px 13px",cursor:"pointer",textAlign:"left",transition:"all .15s",display:"flex",alignItems:"center",gap:10}}>
+                <span style={{fontSize:18,minWidth:24}}>{op.icono}</span>
+                <div style={{flex:1}}>
+                  <div style={{display:"flex",alignItems:"center",gap:7,marginBottom:2}}>
+                    <span style={{fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:700,fontSize:13,color:"#fff"}}>{op.titulo}</span>
+                    <span style={{fontFamily:"monospace",fontSize:10,color:tratIva===op.key?op.borde:"#475569",background:"#1e2235",padding:"1px 7px",borderRadius:4}}>{op.cuenta}</span>
+                  </div>
+                  <div style={{fontSize:11,color:"#94a3b8"}}>{op.desc}</div>
+                </div>
+                {tratIva===op.key&&<span style={{fontSize:16,color:op.borde}}>✓</span>}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div style={{background:"#0a1a0a",border:"1px solid #166534",borderRadius:7,padding:"7px 12px",marginBottom:16,fontSize:11,color:"#4ade80"}}>
+          ✓ <strong>PUC integrado</strong> — la IA usará exclusivamente las cuentas del PUC de la empresa.
+        </div>
+        <div style={{display:"flex",gap:10,justifyContent:"flex-end"}}>
+          <button onClick={onCancel} style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",padding:"8px 16px",borderRadius:6,cursor:"pointer",fontSize:13,fontWeight:600,fontFamily:"inherit"}}>Cancelar</button>
+          <button onClick={()=>listo&&onConfirm(tratamiento,tratIva)} disabled={!listo}
+            style={{background:listo?"#4f7cff":"#1e2235",color:listo?"#fff":"#475569",border:"none",padding:"8px 22px",borderRadius:6,cursor:listo?"pointer":"not-allowed",fontSize:13,fontWeight:700,fontFamily:"inherit"}}>
+            {listo?"Procesar →":"Completa los 2 pasos"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FacturaCard({ f, idx, onUpdate, docNum }) {
+  const [expandido, setExpandido] = useState(true);
+  const fmt = n => `${Number(n||0).toLocaleString("es-CO")}`;
+  const asientoInicial = useCallback(() => {
+    if (!f.ia) return [];
+    const neto = (f.total||0) - (f.esAutorretenedor?0:(f.retefuente||0)) - (f.retica||0);
+    const filas = [];
+    f.ia.lineas_contables?.forEach((l,i)=>{
+      filas.push({ id:`lc${i}`, tipo:"debito", descripcion:l.descripcion, valor:l.valor_base, cuenta:l.cuenta_debito_codigo, cuentaNombre:l.cuenta_debito_nombre, editable:true, eliminable:true, advertencia:l.sin_cuenta_exacta });
+    });
+    if (f.totalIva>0 && f.ia.cuenta_iva_codigo) filas.push({ id:"iva", tipo:"debito", descripcion:f.ia.cuenta_iva_nombre||"IVA", valor:f.totalIva, cuenta:f.ia.cuenta_iva_codigo, cuentaNombre:f.ia.cuenta_iva_nombre, editable:true, eliminable:true, advertencia:false });
+    if (!f.esAutorretenedor && (f.retefuente||0)>0 && f.ia.cuenta_retefuente_codigo) filas.push({ id:"rete", tipo:"credito", descripcion:f.ia.retefuente_descripcion||"Retención en la fuente", valor:f.retefuente, cuenta:f.ia.cuenta_retefuente_codigo, cuentaNombre:f.ia.cuenta_retefuente_nombre, editable:true, eliminable:true, advertencia:false });
+    if ((f.retica||0)>0) filas.push({ id:"retica", tipo:"credito", descripcion:"Retención de industria y comercio", valor:f.retica, cuenta:"13551801", cuentaNombre:"Retencion industria y comercio", editable:true, eliminable:true, advertencia:false });
+    filas.push({ id:"prov", tipo:"credito", descripcion:`Proveedor — ${(f.razonSocial||"").slice(0,40)}`, valor:neto, cuenta:"22050101", cuentaNombre:"Proveedores", editable:true, eliminable:false, advertencia:false });
+    return filas;
+  }, [f]);
+  const [filas, setFilas] = useState(()=> f.asiento || asientoInicial());
+  const recalcularProveedor = useCallback((fs) => {
+    const totalDeb = fs.filter(r=>r.tipo==="debito"&&r.id!=="prov").reduce((s,r)=>s+r.valor,0);
+    const totalCre = fs.filter(r=>r.tipo==="credito"&&r.id!=="prov").reduce((s,r)=>s+r.valor,0);
+    return fs.map(r => r.id==="prov" ? {...r, valor: Math.max(0, totalDeb-totalCre)} : r);
+  }, []);
+  const updFila = (id, campo, valor) => { const n=recalcularProveedor(filas.map(r=>r.id===id?{...r,[campo]:valor}:r)); setFilas(n); onUpdate(f.id,"asiento",n); };
+  const eliminarFila = (id) => { const n=recalcularProveedor(filas.filter(r=>r.id!==id)); setFilas(n); onUpdate(f.id,"asiento",n); };
+  const agregarFila = () => { const n=recalcularProveedor([...filas.filter(r=>r.id!=="prov"),{id:`extra${Date.now()}`,tipo:"debito",descripcion:"Nueva línea",valor:0,cuenta:"",cuentaNombre:"",editable:true,eliminable:true,advertencia:true},...filas.filter(r=>r.id==="prov")]); setFilas(n); onUpdate(f.id,"asiento",n); };
+  const totalDeb = filas.filter(r=>r.tipo==="debito").reduce((s,r)=>s+r.valor,0);
+  const totalCre = filas.filter(r=>r.tipo==="credito").reduce((s,r)=>s+r.valor,0);
+  const cuadra = Math.abs(totalDeb-totalCre)<1;
+  const hayAdv = filas.some(r=>r.advertencia);
+  const tratColor = f.tratamiento==="inventario"?"#60a5fa":"#c084fc";
+  const tratBg = f.tratamiento==="inventario"?"#0e1825":"#120e1f";
+  if (f.error) return (
+    <div style={{background:"#1a0a0a",border:"1px solid #3b1f1f",borderRadius:10,padding:"12px 18px",display:"flex",gap:10,alignItems:"center"}}>
+      <span style={{color:"#64748b",fontSize:11}}>#{(idx+1).toString().padStart(2,"0")}</span>
+      <span style={{color:"#f87171",fontSize:13}}>❌ {f.archivo}</span>
+      <span style={{color:"#64748b",fontSize:12,flex:1}}>{f.error}</span>
+    </div>
+  );
+  const neto = filas.find(r=>r.id==="prov")?.valor||0;
+  return (
+    <div style={{background:"#161923",border:`1px solid ${f.aprobado?"#166534":cuadra?"#232840":"#7c3700"}`,borderRadius:12,overflow:"hidden"}}>
+      <div style={{background:tratBg,borderBottom:"1px solid #1e2235",padding:"8px 16px",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+        <span style={{fontSize:11,color:"#475569",fontWeight:600,minWidth:24}}>#{(idx+1).toString().padStart(2,"0")}</span>
+        {docNum&&<span style={{background:"#1e2a3a",color:"#60a5fa",padding:"2px 9px",borderRadius:4,fontFamily:"monospace",fontSize:11,fontWeight:700}}>DocNum: {docNum}</span>}
+        <span style={{display:"inline-flex",alignItems:"center",gap:4,background:f.tratamiento==="inventario"?"#1e3a5f":"#2d1b4e",color:tratColor,border:`1px solid ${tratColor}44`,borderRadius:20,padding:"2px 9px",fontSize:11,fontWeight:600}}>{f.tratamiento==="inventario"?"📦 Inventario":"📉 Costo/Gasto"}</span>
+        {f.esAutorretenedor&&<span style={{background:"#2d1a00",color:"#fb923c",border:"1px solid #7c370066",borderRadius:20,padding:"2px 9px",fontSize:11,fontWeight:600}}>🔒 Autorretenedor</span>}
+        {hayAdv&&<span style={{background:"#2d2000",color:"#fbbf24",border:"1px solid #78570066",borderRadius:20,padding:"2px 9px",fontSize:11,fontWeight:600}}>⚠ Verificar cuenta</span>}
+        {!cuadra&&<span style={{background:"#3b1f1f",color:"#f87171",border:"1px solid #7c3700",borderRadius:20,padding:"2px 9px",fontSize:11,fontWeight:600}}>⚡ Descuadrado</span>}
+        {f.aprobado&&<span style={{background:"#14532d",color:"#86efac",borderRadius:20,padding:"2px 9px",fontSize:11,fontWeight:600}}>✓ Aprobado</span>}
+        <div style={{marginLeft:"auto",display:"flex",gap:6}}>
+          <button onClick={()=>setExpandido(e=>!e)} style={{background:"transparent",border:"1px solid #2d3352",color:"#94a3b8",borderRadius:6,padding:"3px 10px",cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>{expandido?"▲":"▼ Asiento"}</button>
+          <button onClick={()=>{ if(!cuadra){alert("El asiento está descuadrado.");return;} onUpdate(f.id,"aprobado",!f.aprobado); }}
+            style={{background:f.aprobado?"#14532d":"#4f7cff",color:f.aprobado?"#86efac":"#fff",border:"none",borderRadius:6,padding:"3px 14px",cursor:"pointer",fontSize:11,fontWeight:700,fontFamily:"inherit"}}>
+            {f.aprobado?"✓ Aprobado":"Aprobar"}
+          </button>
+        </div>
+      </div>
+      <div style={{padding:"11px 16px",display:"flex",gap:14,alignItems:"flex-start",flexWrap:"wrap"}}>
+        <div style={{flex:2,minWidth:220}}>
+          <div style={{fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:700,fontSize:14,color:"#fff",marginBottom:2}}>{f.razonSocial||f.archivo}</div>
+          <div style={{display:"flex",gap:12,flexWrap:"wrap",fontSize:11,color:"#64748b"}}>
+            {f.nitProveedor&&<span>NIT <span style={{color:"#94a3b8"}}>{f.nitProveedor}</span></span>}
+            {f.prefijo&&<span>N° <span style={{color:"#94a3b8"}}>{f.prefijo}</span></span>}
+            {f.fecha&&<span>📅 <span style={{color:"#94a3b8"}}>{f.fecha}</span></span>}
+          </div>
+          {f.ia?.concepto_general&&<div style={{marginTop:4,fontSize:12,color:tratColor,fontStyle:"italic"}}>«{f.ia.concepto_general}»</div>}
+        </div>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+          {[{l:"Subtotal",v:f.subtotal,c:"#cbd5e1"},{l:"IVA",v:f.totalIva,c:"#60a5fa"},{l:"Total",v:f.total,c:"#4ade80",big:true},{l:"Neto prov.",v:neto,c:"#fbbf24",big:true}].map(({l,v,c,big})=>(
+            <div key={l} style={{background:"#0d101a",borderRadius:7,padding:"6px 10px",textAlign:"center",minWidth:72}}>
+              <div style={{fontSize:9,color:"#475569",textTransform:"uppercase",letterSpacing:".06em",marginBottom:2}}>{l}</div>
+              <div style={{fontSize:big?13:11,fontWeight:big?700:500,color:c,fontFamily:"'IBM Plex Sans',sans-serif",whiteSpace:"nowrap"}}>{fmt(v)}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+      {expandido&&f.ia&&(
+        <div style={{borderTop:"1px solid #1e2235",padding:"12px 16px",background:"#0f1117"}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+            <div style={{fontSize:11,color:"#64748b",fontWeight:600,textTransform:"uppercase",letterSpacing:".07em"}}>✏️ Asiento contable editable</div>
+            <div style={{display:"flex",gap:8,alignItems:"center"}}>
+              <span style={{fontSize:11,color:cuadra?"#22c55e":"#f87171",fontWeight:600}}>{cuadra?"✓ Cuadrado":"⚡ Descuadrado"} · Dif: {fmt(Math.abs(totalDeb-totalCre))}</span>
+              {!f.aprobado&&<button onClick={agregarFila} style={{background:"transparent",border:"1px solid #2d3f6e",color:"#60a5fa",borderRadius:5,padding:"3px 10px",cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>+ Agregar línea</button>}
+            </div>
+          </div>
+          <div style={{background:"#0d101a",borderRadius:7,overflow:"auto",border:`1px solid ${cuadra?"#1e2235":"#7c3700"}`}}>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:11,minWidth:500}}>
+              <thead>
+                <tr style={{background:"#131620"}}>
+                  {["Tipo","Cuenta (PlnCod)","Descripción","Débito","Crédito",""].map(h=>(
+                    <th key={h} style={{textAlign:"left",padding:"6px 9px",color:"#475569",fontSize:10,fontWeight:600,textTransform:"uppercase",borderBottom:"1px solid #1e2235"}}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {filas.map(r=>(
+                  <tr key={r.id} style={{borderBottom:"1px solid #1a1d27",background:r.advertencia?"#1a120022":r.id==="prov"?"#0a0d14":"transparent"}}>
+                    <td style={{padding:"6px 9px"}}>
+                      {!f.aprobado&&r.editable&&r.id!=="prov"?(
+                        <select value={r.tipo} onChange={e=>updFila(r.id,"tipo",e.target.value)} style={{background:"#1e2235",border:"1px solid #2d3352",color:r.tipo==="debito"?"#4ade80":"#f87171",borderRadius:4,padding:"2px 6px",fontSize:10,fontFamily:"inherit",cursor:"pointer"}}>
+                          <option value="debito">DÉBITO</option><option value="credito">CRÉDITO</option>
+                        </select>
+                      ):<span style={{fontSize:10,fontWeight:700,color:r.tipo==="debito"?"#4ade80":"#f87171",background:r.tipo==="debito"?"#0a2010":"#200a0a",padding:"2px 7px",borderRadius:4}}>{r.tipo==="debito"?"DÉB":"CRÉ"}</span>}
+                    </td>
+                    <td style={{padding:"6px 9px"}}>
+                      {!f.aprobado&&r.editable?<CeldaEditable valor={r.cuenta} onChange={v=>updFila(r.id,"cuenta",v)} style={{fontFamily:"monospace",color:r.advertencia?"#fb923c":"#60a5fa",fontWeight:600}}/>:<span style={{fontFamily:"monospace",color:r.advertencia?"#fb923c":"#60a5fa",fontWeight:600}}>{r.cuenta}</span>}
+                      {r.advertencia&&<span style={{marginLeft:5,fontSize:9,color:"#fbbf24"}}>⚠</span>}
+                    </td>
+                    <td style={{padding:"6px 9px",maxWidth:200}}>
+                      {!f.aprobado&&r.editable?<CeldaEditable valor={r.descripcion} onChange={v=>updFila(r.id,"descripcion",v)} style={{color:"#cbd5e1"}}/>:<span style={{color:"#94a3b8"}}>{r.descripcion}</span>}
+                    </td>
+                    <td style={{padding:"6px 9px",textAlign:"right"}}>
+                      {r.tipo==="debito"?(!f.aprobado&&r.editable?<CeldaEditable valor={r.valor} onChange={v=>updFila(r.id,"valor",v)} tipo="number" style={{color:"#4ade80",fontWeight:600,textAlign:"right"}}/>:<span style={{color:"#4ade80",fontWeight:600}}>{fmt(r.valor)}</span>):<span style={{color:"#2d3352"}}>—</span>}
+                    </td>
+                    <td style={{padding:"6px 9px",textAlign:"right"}}>
+                      {r.tipo==="credito"?(!f.aprobado&&r.editable?<CeldaEditable valor={r.valor} onChange={v=>updFila(r.id,"valor",v)} tipo="number" style={{color:"#f87171",fontWeight:600,textAlign:"right"}}/>:<span style={{color:r.id==="prov"?"#fbbf24":"#f87171",fontWeight:r.id==="prov"?700:600}}>{fmt(r.valor)}</span>):<span style={{color:"#2d3352"}}>—</span>}
+                    </td>
+                    <td style={{padding:"6px 9px",textAlign:"center"}}>
+                      {!f.aprobado&&r.eliminable?<button onClick={()=>eliminarFila(r.id)} style={{background:"transparent",border:"1px solid #3b1f1f",color:"#f87171",borderRadius:4,padding:"2px 7px",cursor:"pointer",fontSize:11}}>🗑</button>:r.id==="prov"?<span style={{fontSize:10,color:"#fbbf24"}}>auto</span>:<span style={{fontSize:10,color:f.aprobado?"#22c55e":"#475569"}}>{f.aprobado?"🔒":""}</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr style={{background:"#131620",borderTop:"2px solid #1e2235"}}>
+                  <td colSpan={3} style={{padding:"7px 9px",color:"#64748b",fontSize:11,fontWeight:600}}>TOTALES</td>
+                  <td style={{padding:"7px 9px",textAlign:"right",fontWeight:700,color:"#4ade80",fontSize:12}}>{fmt(totalDeb)}</td>
+                  <td style={{padding:"7px 9px",textAlign:"right",fontWeight:700,color:"#f87171",fontSize:12}}>{fmt(totalCre)}</td>
+                  <td style={{padding:"7px 9px",textAlign:"center"}}><span style={{fontSize:11,fontWeight:700,color:cuadra?"#22c55e":"#f87171"}}>{cuadra?"✓":"✗"}</span></td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+          {!f.aprobado&&<div style={{marginTop:8,fontSize:10,color:"#475569",lineHeight:1.7}}>💡 <strong style={{color:"#64748b"}}>Clic sobre cualquier valor</strong> para editarlo · La línea <strong style={{color:"#fbbf24"}}>Proveedor</strong> se recalcula automáticamente.</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TestPanel({ onCargar }) {
+  const [abierto, setAbierto] = useState(false);
+  const lanzar = xmls => { const files = xmls.map((t,i)=>new File([new Blob([t.xml],{type:"text/xml"})],`test-${i+1}.xml`,{type:"text/xml"})); onCargar(files); };
+  return (
+    <div style={{marginTop:10}}>
+      <button onClick={()=>setAbierto(a=>!a)} style={{background:"transparent",border:"1px dashed #2d3f6e",color:"#60a5fa",borderRadius:6,padding:"4px 12px",cursor:"pointer",fontSize:11,fontWeight:600,fontFamily:"inherit"}}>
+        🧪 {abierto?"Ocultar":"Panel de pruebas"} {abierto?"▲":"▼"}
+      </button>
+      {abierto&&(
+        <div style={{background:"#0d101a",border:"1px dashed #2d3f6e",borderTop:"none",borderRadius:"0 0 9px 9px",padding:"11px 13px"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:9}}>
+            <span style={{fontSize:10,color:"#475569"}}>4 facturas con fechas distintas</span>
+            <button onClick={()=>lanzar(FACTURAS_TEST)} style={{background:"#4f7cff",color:"#fff",border:"none",borderRadius:5,padding:"4px 12px",cursor:"pointer",fontSize:11,fontWeight:700,fontFamily:"inherit"}}>▶ Cargar las 4</button>
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:7}}>
+            {FACTURAS_TEST.map(t=>(
+              <div key={t.nombre} style={{background:t.color,border:"1px solid #1e2a3a",borderRadius:7,padding:"8px 10px",display:"flex",gap:7,alignItems:"flex-start"}}>
+                <span style={{fontSize:17}}>{t.icono}</span>
+                <div style={{flex:1}}>
+                  <div style={{fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:600,fontSize:12,color:"#e2e8f0"}}>{t.nombre}</div>
+                  <div style={{fontSize:10,color:"#94a3b8",marginTop:1}}>{t.desc}</div>
+                </div>
+                <button onClick={()=>lanzar([t])} style={{background:"transparent",border:"1px solid #2d3f6e",color:"#60a5fa",borderRadius:5,padding:"3px 8px",cursor:"pointer",fontSize:10,fontFamily:"inherit"}}>▶</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function App() {
+  // Facturas en memoria (por aprobar + aprobadas pendientes de subir)
+  const [facturas, setFacturas] = useState([]);
+  // Historial de facturas ya subidas a ContaFlex — persiste en localStorage
+  const [subidas, setSubidas] = useState(()=>{ try{ return JSON.parse(localStorage.getItem('cf_ia_subidas')||'[]'); }catch(e){return [];} });
+  const guardarSubidas = (arr) => { setSubidas(arr); localStorage.setItem('cf_ia_subidas', JSON.stringify(arr)); };
+  const [tabVista, setTabVista] = useState('pendientes'); // 'pendientes' | 'subidas'
+  const [tablaBases, setTablaBases] = useState([]);
+  const [modalBases, setModalBases] = useState(false);
+  const [modal, setModal] = useState(null);
+  const [procesando, setProcesando] = useState(false);
+  const [modalExport, setModalExport] = useState(false);
+  const [cuentaSeleccionada, setCuentaSeleccionada] = useState(null);
+  const [cfgExport] = useState({ docNumInicio:"1", tpcCod:"CO", prfCod:"", docAux:"", ctoCod:"" });
+  const inputBasesRef = useRef();
+
+  const recibirArchivos = useCallback(lista => {
+    const v = Array.from(lista).filter(f=>f.name.endsWith(".xml")||f.name.endsWith(".pdf"));
+    if (v.length) setModal({ archivos: v });
+  }, []);
+
+  const confirmarTratamiento = useCallback(async (tratamiento, tratIva) => {
+    const { archivos } = modal;
+    setModal(null); setProcesando(true);
+    for (let i=0; i<archivos.length; i+=4) {
+      await Promise.all(archivos.slice(i,i+4).map(async archivo => {
+        try {
+          let datos = {};
+          if (archivo.name.toLowerCase().endsWith(".pdf")) datos = await parsePDFFactura(archivo);
+          else { const t = await archivo.text(); datos = parseXMLFactura(t)||{}; }
+          const ia = await analizarConIA(datos, tratamiento, tratIva);
+          const nit = (datos.nitProveedor||"").replace(/[^0-9]/g,"");
+          const esAuto = !!AUTORRETENEDORES[nit];
+          const base = datos.subtotal||0;
+          setFacturas(prev=>[...prev,{
+            id:Date.now()+Math.random(), archivo:archivo.name, tratamiento, tratIva,
+            ...datos, ia,
+            retefuente: esAuto?0:(()=>{
+              const r = aplicaRetencion(base, datos.fecha, tablaBases, ia.concepto_general, ia.cuenta_retefuente_codigo);
+              if (!r.aplica) return 0; // No supera la base mínima
+              const pct = r.tarifa || ia.retefuente_pct || 0;
+              return +(base*(pct/100)).toFixed(0);
+            })(),
+            retefuente_aplica: !esAuto && aplicaRetencion(base, datos.fecha, tablaBases, ia.concepto_general, ia.cuenta_retefuente_codigo),
+            retica: (()=>{
+              const uvt = getUVT(datos.fecha);
+              // ReteICA aplica si supera ~$0 (depende del municipio, sin base mínima DIAN)
+              return +(base*(ia.retica_por_mil/1000)).toFixed(0);
+            })(),
+            esAutorretenedor:esAuto, nombreAutorret:AUTORRETENEDORES[nit]||null,
+            aprobado:false,
+          }]);
+        } catch(e) {
+          setFacturas(prev=>[...prev,{id:Date.now()+Math.random(),archivo:archivo.name,error:e.message}]);
+        }
+      }));
+    }
+    setProcesando(false);
+  }, [modal]);
+
+  const upd = (id,k,v) => setFacturas(p=>p.map(f=>f.id===id?{...f,[k]:v}:f));
+  const aprobadasOrdenadas = [...facturas].filter(f=>f.aprobado&&!f.error).sort((a,b)=>(a.fecha||"").localeCompare(b.fecha||""));
+  const cargarExcelBases = (e) => {
+  const file = e.target.files?.[0]; if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    try {
+      const wb = XLSX.read(ev.target.result, {type:'array'});
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, {defval:''});
+      // Normalizar columnas (acepta varios nombres)
+      const norm = rows.map(r => ({
+        concepto:    r.concepto    || r.Concepto    || r.CONCEPTO    || '',
+        cuenta:      String(r.cuenta || r.Cuenta || r.CUENTA || '').trim(),
+        tarifa_pct:  parseFloat(r.tarifa_pct || r.tarifa || r.Tarifa || r['Tarifa%'] || 0),
+        base_uvt:    parseFloat(r.base_uvt   || r.BaseUVT || r['Base UVT'] || 0),
+        base_pesos:  parseFloat(String(r.base_pesos || r.BasePesos || r['Base $'] || 0).replace(/[^0-9.]/g,'')),
+        fecha_inicio: r.fecha_inicio || r.FechaInicio || r.desde || '',
+        fecha_fin:    r.fecha_fin    || r.FechaFin    || r.hasta || '',
+      })).filter(r => r.tarifa_pct > 0);
+      setTablaBases(norm);
+      setModalBases(false);
+      alert('✓ '+norm.length+' reglas de retención cargadas');
+      console.log('Bases cargadas:', norm);
+    } catch(e) { alert('Error leyendo Excel: '+e.message); }
+  };
+  reader.readAsArrayBuffer(file);
+};
+
+const getDocNum = (id) => { const idx=aprobadasOrdenadas.findIndex(f=>f.id===id); return idx===-1?null:(parseInt(cfgExport.docNumInicio)||1)+idx; };
+  const fmt = n => `$${Number(n||0).toLocaleString("es-CO")}`;
+
+  return (
+    <div style={{fontFamily:"'IBM Plex Mono','Courier New',monospace",background:"#0f1117",minHeight:"100vh",color:"#e2e8f0"}}>
+      {modal&&<ModalTratamiento archivos={modal.archivos} onConfirm={confirmarTratamiento} onCancel={()=>setModal(null)}/>}
+      {modalExport&&<ModalExport facturas={facturas} onClose={()=>setModalExport(false)}/>}
+      <div style={{background:"#0d101a",borderBottom:"1px solid #1e2235",padding:"12px 24px",display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10}}>
+        <div style={{display:"flex",alignItems:"center",gap:11}}>
+          <div style={{width:32,height:32,background:"linear-gradient(135deg,#4f7cff,#8b5cf6)",borderRadius:7,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16}}>⚡</div>
+          <div>
+            <div style={{fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:700,fontSize:14,color:"#fff"}}>ContaIA DIAN</div>
+            <div style={{fontSize:10,color:"#64748b"}}>Contabilización automática · PUC empresa integrado</div>
+          </div>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <div style={{background:"#0a1a0a",border:"1px solid #166534",borderRadius:5,padding:"4px 10px",fontSize:10,color:"#4ade80",fontWeight:600}}>✓ PUC cargado</div>
+          {facturas.length>0&&(<>
+            <div style={{fontSize:11,color:"#64748b"}}><span style={{color:"#4f7cff",fontWeight:700}}>{facturas.filter(f=>!f.error).length}</span> facturas · <span style={{color:"#22c55e",fontWeight:700}}>{aprobadasOrdenadas.length}</span> aprobadas</div>
+            {aprobadasOrdenadas.length>0&&<button onClick={()=>setModalExport(true)} style={{background:"#22c55e",color:"#fff",border:"none",borderRadius:6,padding:"6px 14px",cursor:"pointer",fontSize:12,fontWeight:700,fontFamily:"inherit"}}>⬇ Exportar Excel</button>}
+            {facturas.filter(f=>!f.error&&f.nitProveedor).length>0&&<button onClick={()=>exportarTerceros(facturas)} style={{background:"#1e3a5f",color:"#60a5fa",border:"1px solid #2d5a8e",borderRadius:6,padding:"6px 14px",cursor:"pointer",fontSize:12,fontWeight:700,fontFamily:"inherit"}}>👥 Exportar Terceros</button>}
+            <button onClick={()=>setFacturas([])} style={{background:"transparent",border:"1px solid #2d3352",color:"#64748b",borderRadius:6,padding:"4px 9px",cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>🗑</button>
+          </>)}
+        </div>
+      </div>
+      <div style={{maxWidth:1040,margin:"0 auto",padding:"24px 16px"}}>
+        {/* TABS */}
+        {(facturas.length>0||subidas.length>0)&&(
+          <div style={{display:'flex',gap:0,borderBottom:'1px solid #1e2235',marginBottom:16}}>
+            {[
+              ['pendientes','📋 Pendientes',(facturas.filter(f=>!f.aprobado||f.error).length+facturas.filter(f=>f.aprobado&&!f.error).length)],
+              ['subidas','✓ Subidas a ContaFlex',subidas.length],
+            ].map(([id,lbl,cnt])=>(
+              <button key={id} onClick={()=>setTabVista(id)}
+                style={{padding:'9px 18px',border:'none',background:'transparent',cursor:'pointer',
+                  fontSize:12,fontWeight:500,fontFamily:'inherit',
+                  color:tabVista===id?'#4ade80':'#475569',
+                  borderBottom:tabVista===id?'2px solid #4ade80':'2px solid transparent'}}>
+                {lbl} <span style={{marginLeft:4,background:tabVista===id?'rgba(74,222,128,.15)':'rgba(255,255,255,.06)',color:tabVista===id?'#4ade80':'#475569',borderRadius:20,padding:'1px 7px',fontSize:10,fontWeight:700}}>{cnt}</span>
+              </button>
+            ))}
+            {subidas.length>0&&(
+              <button onClick={()=>{if(confirm('¿Limpiar historial de subidas?'))guardarSubidas([]);}}
+                style={{marginLeft:'auto',background:'transparent',border:'none',color:'#475569',cursor:'pointer',fontSize:11,fontFamily:'inherit',padding:'9px 12px'}}>
+                🗑 Limpiar historial
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* VISTA SUBIDAS */}
+        {tabVista==='subidas'&&(
+          <div style={{display:'flex',flexDirection:'column',gap:10}}>
+            {subidas.length===0&&(
+              <div style={{textAlign:'center',padding:40,color:'#475569',fontSize:13}}>
+                Sin facturas subidas aún
+              </div>
+            )}
+            {subidas.map((f,i)=>(
+              <div key={f.id+'_'+i} style={{background:'#0f1a0f',border:'1px solid #166534',borderRadius:10,padding:'12px 16px',display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8}}>
+                <div>
+                  <span style={{fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:700,color:'#4ade80',fontSize:13}}>{f.razonSocial||f.nitProveedor}</span>
+                  <span style={{marginLeft:10,fontFamily:'monospace',color:'#475569',fontSize:11}}>{f.nitProveedor}</span>
+                  <div style={{fontSize:11,color:'#475569',marginTop:3}}>
+                    Fecha factura: {f.fecha} · Subida: {f.fechaSubida||'—'} · Total: <span style={{color:'#4ade80',fontWeight:600}}>${(f.total||0).toLocaleString('es-CO')}</span>
+                  </div>
+                </div>
+                <div style={{display:'flex',gap:8,alignItems:'center'}}>
+                  <span style={{background:'rgba(74,222,128,.1)',color:'#4ade80',border:'1px solid rgba(74,222,128,.2)',borderRadius:20,padding:'2px 10px',fontSize:10,fontWeight:600}}>✓ Subida</span>
+                  <button onClick={()=>{
+                    // Restaurar factura para re-procesar
+                    const restaurada = {...f, aprobado:false, fechaSubida:undefined};
+                    setFacturas(p=>[...p, restaurada]);
+                    guardarSubidas(subidas.filter((_,idx)=>idx!==i));
+                    setTabVista('pendientes');
+                  }} style={{background:'transparent',border:'1px solid #2d3352',color:'#64748b',borderRadius:6,padding:'3px 10px',cursor:'pointer',fontSize:11,fontFamily:'inherit'}}>
+                    ↩ Restaurar
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {tabVista==='pendientes'&&(
+        <React.Fragment>
+        <div className="dz"
+          onDragOver={e=>{e.preventDefault();e.currentTarget.classList.add("over")}}
+          onDragLeave={e=>e.currentTarget.classList.remove("over")}
+          onDrop={e=>{e.preventDefault();e.currentTarget.classList.remove("over");recibirArchivos(e.dataTransfer.files)}}
+          onClick={()=>document.getElementById("fi").click()}>
+          <input id="fi" type="file" multiple accept=".xml,.pdf" style={{display:"none"}} onChange={e=>recibirArchivos(e.target.files)}/>
+          {procesando?(
+            <div><div style={{fontSize:28,marginBottom:8,display:"inline-block",animation:"spin 1s linear infinite"}}>⚙️</div><div style={{fontFamily:"'IBM Plex Sans',sans-serif",fontSize:14,color:"#4f7cff",fontWeight:600}}>Procesando con IA…</div><div style={{fontSize:11,color:"#475569",marginTop:4}}>Buscando cuentas en el PUC</div></div>
+          ):(
+            <div><div style={{fontSize:34,marginBottom:8}}>📂</div><div style={{fontFamily:"'IBM Plex Sans',sans-serif",fontSize:14,fontWeight:600,color:"#cbd5e1"}}>Arrastra facturas XML o PDF aquí</div><div style={{fontSize:11,color:"#64748b",marginTop:4}}>Se preguntará el tratamiento antes de procesar</div></div>
+          )}
+        </div>
+        <TestPanel onCargar={recibirArchivos}/>
+        {facturas.length>0&&(
+          <div style={{marginTop:24,display:"flex",flexDirection:"column",gap:12}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+              <div style={{fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:700,fontSize:14,color:"#fff"}}>Facturas procesadas <span style={{color:"#4f7cff"}}>({facturas.length})</span></div>
+            </div>
+            {/* SECCIÓN: Por aprobar */}
+            {facturas.filter(f=>!f.aprobado||f.error).length>0&&(
+              <div>
+                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,paddingBottom:6,borderBottom:'1px solid #1e2235'}}>
+                  <div style={{width:8,height:8,borderRadius:'50%',background:'#f59e0b'}}></div>
+                  <span style={{fontFamily:"'IBM Plex Sans',sans-serif",fontSize:12,fontWeight:700,color:'#f59e0b',textTransform:'uppercase',letterSpacing:.5}}>
+                    Por aprobar · {facturas.filter(f=>!f.aprobado||f.error).length}
+                  </span>
+                </div>
+                <div style={{display:'flex',flexDirection:'column',gap:12}}>
+                  {facturas.filter(f=>!f.aprobado||f.error).map((f,i)=>(
+                    <FacturaCard key={f.id} f={f} idx={facturas.indexOf(f)} onUpdate={upd} docNum={null}/>
+                  ))}
+                </div>
+              </div>
+            )}
+            {/* SECCIÓN: Aprobadas */}
+            {aprobadasOrdenadas.length>0&&(
+              <div>
+                <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,paddingBottom:6,borderBottom:'1px solid #166534'}}>
+                  <div style={{width:8,height:8,borderRadius:'50%',background:'#4ade80'}}></div>
+                  <span style={{fontFamily:"'IBM Plex Sans',sans-serif",fontSize:12,fontWeight:700,color:'#4ade80',textTransform:'uppercase',letterSpacing:.5}}>
+                    Aprobadas · {aprobadasOrdenadas.length}
+                  </span>
+                </div>
+                <div style={{display:'flex',flexDirection:'column',gap:12}}>
+                  {aprobadasOrdenadas.map((f,i)=>(
+                    <FacturaCard key={f.id} f={f} idx={facturas.indexOf(f)} onUpdate={upd} docNum={f.aprobado&&!f.error?getDocNum(f.id):null}/>
+                  ))}
+                </div>
+              </div>
+            )}
+            {aprobadasOrdenadas.length>0&&(
+              <div style={{background:"#0f1a2e",border:"1px solid #1e3a5f",borderRadius:10,padding:"16px 20px",marginTop:4}}>
+                <div style={{fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:700,fontSize:13,color:"#60a5fa",marginBottom:12}}>📊 Resumen · {aprobadasOrdenadas.length} facturas aprobadas</div>
+                <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:14}}>
+                  {[
+                    ["Total facturado",fmt(aprobadasOrdenadas.reduce((s,f)=>s+(f.total||0),0)),"#4ade80"],
+                    ["(−) ReteFuente",fmt(aprobadasOrdenadas.reduce((s,f)=>s+(f.retefuente||0),0)),"#f87171"],
+                    ["(−) ReteICA",fmt(aprobadasOrdenadas.reduce((s,f)=>s+(f.retica||0),0)),"#f87171"],
+                    ["Neto a pagar",fmt(aprobadasOrdenadas.reduce((s,f)=>s+(f.total||0)-(f.retefuente||0)-(f.retica||0),0)),"#fbbf24"],
+                  ].map(([l,v,c])=>(
+                    <div key={l} style={{background:"#0d1520",borderRadius:7,padding:"10px 13px"}}>
+                      <div style={{fontSize:9,color:"#64748b",textTransform:"uppercase",letterSpacing:".06em",marginBottom:3}}>{l}</div>
+                      <div style={{fontSize:15,fontWeight:700,color:c,fontFamily:"'IBM Plex Sans',sans-serif"}}>{v}</div>
+                    </div>
+                  ))}
+                </div>
+                {/* RESUMEN POR CUENTA */}
+                {(()=>{
+                  const cuentaMap = {};
+                  aprobadasOrdenadas.forEach(f=>{
+                    const lineas = f.asiento||[];
+                    lineas.forEach(l=>{
+                      if(!l.cuenta) return;
+                      if(!cuentaMap[l.cuenta]) cuentaMap[l.cuenta]={cuenta:l.cuenta,nombre:l.cuentaNombre||l.descripcion||l.cuenta,debito:0,credito:0,facturas:[]};
+                      cuentaMap[l.cuenta].debito += parseFloat(l.tipo==='debito'?l.valor:0)||0;
+                      cuentaMap[l.cuenta].credito += parseFloat(l.tipo==='credito'?l.valor:0)||0;
+                      if(!cuentaMap[l.cuenta].facturas.includes(f.id)) cuentaMap[l.cuenta].facturas.push(f.id);
+                    });
+                  });
+                  const cuentas = Object.values(cuentaMap).sort((a,b)=>a.cuenta.localeCompare(b.cuenta));
+                  if(!cuentas.length) return null;
+                  return (
+                    <div style={{marginTop:14}}>
+                      <div style={{fontFamily:"'IBM Plex Sans',sans-serif",fontWeight:700,fontSize:12,color:'#94a3b8',marginBottom:8,textTransform:'uppercase',letterSpacing:.5}}>
+                        Resumen por cuenta — clic para ver facturas
+                      </div>
+                      <div style={{background:'#0d1520',borderRadius:8,overflow:'hidden',border:'1px solid #1e2a3a'}}>
+                        <table style={{width:'100%',borderCollapse:'collapse',fontSize:12}}>
+                          <thead>
+                            <tr style={{borderBottom:'1px solid #1e2a3a'}}>
+                              {['Cuenta','Nombre','Débito','Crédito','Facturas'].map(h=>(
+                                <th key={h} style={{padding:'7px 12px',textAlign:h==='Cuenta'||h==='Nombre'?'left':'right',fontSize:10,fontWeight:700,color:'#475569',textTransform:'uppercase',letterSpacing:.5}}>{h}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {cuentas.map((ct,i)=>(
+                              <tr key={ct.cuenta}
+                                onClick={()=>setCuentaSeleccionada(cuentaSeleccionada===ct.cuenta?null:ct.cuenta)}
+                                style={{borderBottom:'1px solid rgba(30,42,58,.5)',cursor:'pointer',
+                                  background:cuentaSeleccionada===ct.cuenta?'rgba(79,142,247,.08)':'transparent'}}>
+                                <td style={{padding:'7px 12px',fontFamily:'monospace',color:'#e8b84b',fontWeight:600,fontSize:11.5}}>{ct.cuenta}</td>
+                                <td style={{padding:'7px 12px',color:'#94a3b8',maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{ct.nombre}</td>
+                                <td style={{padding:'7px 12px',textAlign:'right',fontFamily:'monospace',color:'#4ade80'}}>{ct.debito>0?fmt(ct.debito):'—'}</td>
+                                <td style={{padding:'7px 12px',textAlign:'right',fontFamily:'monospace',color:'#f87171'}}>{ct.credito>0?fmt(ct.credito):'—'}</td>
+                                <td style={{padding:'7px 12px',textAlign:'right',color:'#64748b',fontSize:11}}>{ct.facturas.length}</td>
+                              </tr>
+                            ))}
+                            {/* Detalle facturas al hacer click */}
+                            {cuentaSeleccionada&&cuentaMap[cuentaSeleccionada]&&(
+                              <tr>
+                                <td colSpan={5} style={{padding:'12px',background:'rgba(79,142,247,.04)',borderTop:'1px solid rgba(79,142,247,.2)'}}>
+                                  <div style={{fontFamily:"'IBM Plex Sans',sans-serif",fontSize:11,fontWeight:700,color:'#4f8ef7',marginBottom:8}}>
+                                    Facturas con cuenta {cuentaSeleccionada}
+                                  </div>
+                                  <div style={{display:'flex',flexDirection:'column',gap:6}}>
+                                    {cuentaMap[cuentaSeleccionada].facturas.map(fid=>{
+                                      const fac = aprobadasOrdenadas.find(f=>f.id===fid);
+                                      if(!fac) return null;
+                                      const linea = (fac.asiento||[]).find(l=>l.cuenta===cuentaSeleccionada);
+                                      return (
+                                        <div key={fid} style={{display:'flex',justifyContent:'space-between',alignItems:'center',background:'#0d1520',borderRadius:6,padding:'7px 10px',border:'1px solid #1e2a3a'}}>
+                                          <div>
+                                            <span style={{fontFamily:'monospace',color:'#4f8ef7',fontSize:11,fontWeight:600}}>{getDocNum(fac.id)||'—'}</span>
+                                            <span style={{marginLeft:8,color:'#64748b',fontSize:11}}>{fac.razonSocial||fac.nitProveedor}</span>
+                                            <span style={{marginLeft:8,color:'#475569',fontSize:10}}>{fac.fecha}</span>
+                                          </div>
+                                          <div style={{display:'flex',gap:12,alignItems:'center'}}>
+                                            {linea?.tipo==='debito'&&<span style={{fontFamily:'monospace',color:'#4ade80',fontSize:11}}>{fmt(linea.valor)}</span>}
+                                            {linea?.tipo==='credito'&&<span style={{fontFamily:'monospace',color:'#f87171',fontSize:11}}>{fmt(linea.valor)}</span>}
+                                            <span style={{fontFamily:'monospace',color:'#94a3b8',fontSize:10}}>{linea?.descripcion||''}</span>
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  );
+                })()}
+                <div style={{display:"flex",justifyContent:"flex-end",marginTop:14}}>
+                  <button onClick={()=>setModalExport(true)} style={{background:"#22c55e",color:"#fff",border:"none",borderRadius:7,padding:"9px 22px",cursor:"pointer",fontSize:13,fontWeight:700,fontFamily:"inherit"}}>⬇ Exportar comprobante Excel</button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+        </React.Fragment>
+        )} {/* fin tab pendientes */}
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
