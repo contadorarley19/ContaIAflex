@@ -132,7 +132,7 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
     setCargando(true); setError("");
     setPaso("descarga");
     setProgreso({ actual: 0, total: trackIds.length });
-    addLog(`Iniciando descarga de ${trackIds.length} facturas en un solo lote...`, "info");
+    addLog(`Iniciando descarga de ${trackIds.length} facturas en lotes de 8...`, "info");
 
     // ── Función que hace UNA llamada batch y procesa resultado ───────────────
     const ejecutarBatch = async (ids, ckActual, intento = 1) => {
@@ -164,52 +164,45 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
       return { ok, err, sesionMuerta: res.sesionMuerta };
     };
 
-    // ── Ronda 1: todos ───────────────────────────────────────────────────────
+    // ── Enviar en lotes de 8 para no superar timeout de Netlify (26s) ────────
+    const LOTE = 8;
     let xmlsOk = [];
-    let pendientes = trackIds;
+    let pendientes = [...trackIds];
 
     try {
-      const { ok, err, sesionMuerta } = await ejecutarBatch(pendientes, cookies, 1);
-
-      ok.forEach(r => {
-        const f = facturas.find(x => x.trackId === r.trackId);
-        const nombre = `${(f?.emisor || "factura").replace(/[^a-zA-Z0-9]/g,"_")}_${r.trackId.slice(0,8)}.xml`;
-        xmlsOk.push({ nombre, contenido: b64ToUtf8(r.xml), trackId: r.trackId, factura: f });
-      });
-
-      setProgreso({ actual: ok.length, total: trackIds.length });
-      pendientes = err.map(e => e.trackId).filter(id => {
-        const e = err.find(x => x.trackId === id);
-        return !e?.error?.includes("expirada");
-      });
-
-      // ── Ronda 2: reintentar fallidos (si los hay y la sesión sigue viva) ───
-      if (pendientes.length > 0 && !sesionMuerta) {
-        addLog(`─── Reintentando ${pendientes.length} fallidos... ───`, "info");
-        await new Promise(r => setTimeout(r, 2000)); // pausa antes de reintentar
-
-        const { ok: ok2, err: err2 } = await ejecutarBatch(pendientes, cookies, 2);
-
-        ok2.forEach(r => {
+      // Ronda 1: lotes de 8
+      for (let i = 0; i < trackIds.length; i += LOTE) {
+        const lote = trackIds.slice(i, i + LOTE);
+        const { ok, err } = await ejecutarBatch(lote, cookies, 1);
+        ok.forEach(r => {
           const f = facturas.find(x => x.trackId === r.trackId);
           const nombre = `${(f?.emisor || "factura").replace(/[^a-zA-Z0-9]/g,"_")}_${r.trackId.slice(0,8)}.xml`;
           xmlsOk.push({ nombre, contenido: b64ToUtf8(r.xml), trackId: r.trackId, factura: f });
         });
-
         setProgreso({ actual: xmlsOk.length, total: trackIds.length });
+        // Guardar fallidos para reintento
+        err.forEach(e => {
+          if (!e.error?.includes("expirada")) pendientes = pendientes.filter(id => id !== e.trackId);
+          else pendientes = pendientes.filter(id => id !== e.trackId); // sacar también expiradas
+        });
+        if (i + LOTE < trackIds.length) await new Promise(r => setTimeout(r, 1000));
+      }
 
-        // ── Ronda 3: último intento para los muy resistentes ─────────────────
-        const aun = err2.map(e => e.trackId);
-        if (aun.length > 0) {
-          addLog(`─── Último intento para ${aun.length} restantes... ───`, "info");
-          await new Promise(r => setTimeout(r, 3000));
-          const { ok: ok3 } = await ejecutarBatch(aun, cookies, 3);
-          ok3.forEach(r => {
+      // Ronda 2: reintentar los que fallaron
+      pendientes = trackIds.filter(id => !xmlsOk.find(x => x.trackId === id));
+      if (pendientes.length > 0) {
+        addLog(`─── Reintentando ${pendientes.length} fallidos... ───`, "info");
+        await new Promise(r => setTimeout(r, 2000));
+        for (let i = 0; i < pendientes.length; i += LOTE) {
+          const lote = pendientes.slice(i, i + LOTE);
+          const { ok: ok2 } = await ejecutarBatch(lote, cookies, 2);
+          ok2.forEach(r => {
             const f = facturas.find(x => x.trackId === r.trackId);
             const nombre = `${(f?.emisor || "factura").replace(/[^a-zA-Z0-9]/g,"_")}_${r.trackId.slice(0,8)}.xml`;
             xmlsOk.push({ nombre, contenido: b64ToUtf8(r.xml), trackId: r.trackId, factura: f });
           });
           setProgreso({ actual: xmlsOk.length, total: trackIds.length });
+          if (i + LOTE < pendientes.length) await new Promise(r => setTimeout(r, 1000));
         }
       }
 
