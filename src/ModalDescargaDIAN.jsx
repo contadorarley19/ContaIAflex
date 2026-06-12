@@ -11,6 +11,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { useState, useRef } from "react";
+import * as XLSX from "xlsx";
 
 const DIAN_PROXY_URL = "/.netlify/functions/dian-proxy";
 
