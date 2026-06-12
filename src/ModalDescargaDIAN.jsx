@@ -222,8 +222,9 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
       const existingIds = new Set(prev.map(x => x.trackId));
       const nuevos = xmlsOk.filter(x => !existingIds.has(x.trackId));
       const total = [...prev, ...nuevos];
-      // Actualizar progreso con el total acumulado
       setProgreso(p => ({ actual: total.length, total: p.total || trackIds.length }));
+      // Seleccionar TODAS las que tienen XML para que PDFs descargue todas
+      setSeleccion(new Set(total.map(x => x.trackId)));
       return total;
     });
     setCargando(false);
