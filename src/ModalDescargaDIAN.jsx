@@ -96,18 +96,10 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
     const ckActual = ck || cookies;
     const dhActual = dh || dianHost;
     setCargando(true); setError("");
+    addLog(`Consultando facturas del ${fmtFecha(desde)} al ${fmtFecha(hasta)}...`, "info");
     try {
-      // Paso 1: obtener token de verificación (llamada separada ~8s)
-      addLog("Obteniendo token de verificación DIAN...", "info");
-      const tokenRes = await dianProxy("get_token", { cookies: ckActual, dianHost: dhActual });
-      const ckConToken = tokenRes.cookies || ckActual;
-      setCookies(ckConToken);
-      addLog("✓ Token obtenido, consultando facturas...", "ok");
-
-      // Paso 2: consultar facturas con el token ya obtenido (~10s)
-      addLog(`Consultando facturas del ${fmtFecha(desde)} al ${fmtFecha(hasta)}...`, "info");
-      const res = await dianProxy("list", { cookies: ckConToken, desde, hasta, dianHost: dhActual, verificationToken: tokenRes.token });
-      setCookies(res.cookies || ckConToken);
+      const res = await dianProxy("list", { cookies: ckActual, desde, hasta, dianHost: dhActual });
+      setCookies(res.cookies || ckActual);
       setFacturas(res.facturas || []);
       setSeleccion(new Set((res.facturas || []).map(f => f.trackId)));
       addLog(`✓ ${res.total} facturas encontradas`, "ok");
@@ -231,36 +223,6 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
   };
 
   // ── Descargar PDFs en batch ───────────────────────────────────────────────
-  // ── Descargar XMLs en ZIP ────────────────────────────────────────────────
-  const descargarXMLs = async () => {
-    if (!xmlsDesc.length) return;
-    addLog(`Preparando ZIP con ${xmlsDesc.length} XMLs...`, "info");
-    try {
-      if (!window.JSZip) {
-        await new Promise((resolve, reject) => {
-          const s = document.createElement("script");
-          s.src = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
-          s.onload = resolve; s.onerror = reject;
-          document.head.appendChild(s);
-        });
-      }
-      const zip = new window.JSZip();
-      xmlsDesc.forEach(({ nombre, contenido }) => {
-        zip.file(nombre, contenido);
-      });
-      const zipBlob = await zip.generateAsync({ type:"blob", compression:"DEFLATE", compressionOptions:{level:6} });
-      const url = URL.createObjectURL(zipBlob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `XMLs_DIAN_${desde}_al_${hasta}.zip`;
-      document.body.appendChild(a); a.click();
-      document.body.removeChild(a); URL.revokeObjectURL(url);
-      addLog(`✓ ZIP descargado con ${xmlsDesc.length} XMLs`, "ok");
-    } catch(e) {
-      addLog(`✗ Error armando ZIP: ${e.message}`, "error");
-    }
-  };
-
   const descargarPDFs = async () => {
     const seleccionadas = facturas
       .filter(f => seleccion.has(f.trackId))
@@ -499,7 +461,7 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
               </div>
               {xmlsDesc.length < progreso.total && (
                 <div style={{ fontSize:12, color:"#fbbf24", marginBottom:4 }}>
-                  ⚠ {progreso.total - xmlsDesc.length} no se pudieron descargar
+                  ⚠ {progreso.total - xmlsDesc.length} no se pudieron descargar — puedes reintentar con un nuevo token DIAN
                 </div>
               )}
               <div style={{ fontSize:12, color:"#64748b" }}>Los XMLs se procesarán con ContaIA — retenciones, IVA y asiento contable.</div>
@@ -552,32 +514,10 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
           )}
 
           {paso==="listo" && xmlsDesc.length>0 && (<>
-            {/* Botón descargar XMLs */}
-            <button onClick={descargarXMLs}
-              style={{ background:"#1e2a3a", color:"#60a5fa", border:"1px solid rgba(96,165,250,.3)", borderRadius:6, padding:"9px 20px", cursor:"pointer", fontSize:13, fontWeight:700 }}>
-              📦 Descargar XMLs ({xmlsDesc.length})
-            </button>
-            {/* Botón descargar PDFs */}
             <button onClick={descargarPDFs} disabled={descargandoPDF}
               style={{ background:descargandoPDF?"#1e2235":"#1e3a5f", color:descargandoPDF?"#475569":"#60a5fa", border:"1px solid rgba(96,165,250,.3)", borderRadius:6, padding:"9px 20px", cursor:descargandoPDF?"not-allowed":"pointer", fontSize:13, fontWeight:700 }}>
               {descargandoPDF ? `⏳ ${progresoDesc.actual}/${progresoDesc.total}...` : "📄 Descargar PDFs"}
             </button>
-            {/* Botón reintentar fallidas — solo si quedaron sin descargar */}
-            {xmlsDesc.length < progreso.total && (
-              <button onClick={() => {
-                // Seleccionar solo las que NO se descargaron
-                const descargadasIds = new Set(xmlsDesc.map(x => x.trackId));
-                const fallidasIds = facturas
-                  .filter(f => !descargadasIds.has(f.trackId))
-                  .map(f => f.trackId);
-                setSeleccion(new Set(fallidasIds));
-                setPaso("lista");
-                addLog(`↩ Reintentando ${fallidasIds.length} facturas fallidas — pegue nuevo token si la sesión expiró`, "info");
-              }}
-                style={{ background:"#2d1a00", color:"#fb923c", border:"1px solid rgba(251,146,60,.3)", borderRadius:6, padding:"9px 20px", cursor:"pointer", fontSize:13, fontWeight:700 }}>
-                🔄 Reintentar {progreso.total - xmlsDesc.length} fallidas
-              </button>
-            )}
             <button onClick={()=>onXmlsDescargados(xmlsDesc)}
               style={{ background:"linear-gradient(135deg,#00cc88,#00e5a0)", color:"#000", border:"none", borderRadius:6, padding:"9px 28px", cursor:"pointer", fontSize:14, fontWeight:800, boxShadow:"0 4px 20px rgba(0,229,160,.3)" }}>
               ⚡ Contabilizar {xmlsDesc.length} facturas →
