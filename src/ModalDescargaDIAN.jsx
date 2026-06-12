@@ -96,10 +96,18 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
     const ckActual = ck || cookies;
     const dhActual = dh || dianHost;
     setCargando(true); setError("");
-    addLog(`Consultando facturas del ${fmtFecha(desde)} al ${fmtFecha(hasta)}...`, "info");
     try {
-      const res = await dianProxy("list", { cookies: ckActual, desde, hasta, dianHost: dhActual });
-      setCookies(res.cookies || ckActual);
+      // Paso 1: obtener token de verificación (llamada separada ~8s)
+      addLog("Obteniendo token de verificación DIAN...", "info");
+      const tokenRes = await dianProxy("get_token", { cookies: ckActual, dianHost: dhActual });
+      const ckConToken = tokenRes.cookies || ckActual;
+      setCookies(ckConToken);
+      addLog("✓ Token obtenido, consultando facturas...", "ok");
+
+      // Paso 2: consultar facturas con el token ya obtenido (~10s)
+      addLog(`Consultando facturas del ${fmtFecha(desde)} al ${fmtFecha(hasta)}...`, "info");
+      const res = await dianProxy("list", { cookies: ckConToken, desde, hasta, dianHost: dhActual, verificationToken: tokenRes.token });
+      setCookies(res.cookies || ckConToken);
       setFacturas(res.facturas || []);
       setSeleccion(new Set((res.facturas || []).map(f => f.trackId)));
       addLog(`✓ ${res.total} facturas encontradas`, "ok");
