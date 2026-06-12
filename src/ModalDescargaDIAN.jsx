@@ -217,8 +217,15 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
     addLog(`✓ ${xmlsOk.length}/${trackIds.length} XMLs descargados correctamente`, "ok");
     if (fallaron > 0) addLog(`⚠ ${fallaron} no se pudieron descargar (sesión expirada o sin XML)`, "warn");
 
-    setXmlsDesc(xmlsOk);
-    setProgreso({ actual: xmlsOk.length, total: trackIds.length });
+    // Acumular con los XMLs ya descargados en rondas anteriores
+    setXmlsDesc(prev => {
+      const existingIds = new Set(prev.map(x => x.trackId));
+      const nuevos = xmlsOk.filter(x => !existingIds.has(x.trackId));
+      const total = [...prev, ...nuevos];
+      // Actualizar progreso con el total acumulado
+      setProgreso(p => ({ actual: total.length, total: p.total || trackIds.length }));
+      return total;
+    });
     setCargando(false);
     setPaso("listo");
   };
