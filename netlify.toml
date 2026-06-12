@@ -6,8 +6,8 @@
   directory = "netlify/functions"
   node_bundler = "esbuild"
 
-[functions.dian-proxy]
-  timeout = 30
+[functions."dian-proxy"]
+  timeout = 26
 
 [[redirects]]
   from = "/api/claude"
