@@ -52,7 +52,7 @@ function dianRequest(path, cookies, method, bodyStr, host) {
       stream.on("error", reject);
     });
     req.on("error", reject);
-    req.setTimeout(30000, () => { req.destroy(); reject(new Error("Timeout DIAN")); });
+    req.setTimeout(22000, () => { req.destroy(); reject(new Error("Timeout DIAN")); });
     if (bodyBuf) req.write(bodyBuf);
     req.end();
   });
@@ -249,19 +249,34 @@ exports.handler = async (event) => {
       return { statusCode: 200, headers, body: JSON.stringify({ ok: true, cookies, dianHost, mensaje: "Sesion DIAN iniciada" }) };
     }
 
+    // ── GET TOKEN (llamada separada para evitar timeout Netlify 26s) ─────────
+    if (action === "get_token") {
+      const { cookies, dianHost: dh } = body;
+      const dianHost = dh || DIAN_HOST_PROD;
+      if (!cookies) return { statusCode: 400, headers, body: JSON.stringify({ error: "Cookies requeridas" }) };
+      const tokenInfo = await getVerificationToken(cookies, dianHost);
+      return { statusCode: 200, headers, body: JSON.stringify({ ok: true, token: tokenInfo.token, cookies: tokenInfo.cookies }) };
+    }
+
     // ── LIST ──────────────────────────────────────────────────────────────────
     if (action === "list") {
-      const { cookies, desde, hasta, dianHost: dh } = body;
+      const { cookies, desde, hasta, dianHost: dh, rvt: rvtPre } = body;
       const dianHost = dh || DIAN_HOST_PROD;
       if (!cookies) return { statusCode: 400, headers, body: JSON.stringify({ error: "Cookies requeridas" }) };
 
       const startDate = desde || new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
       const endDate   = hasta || new Date().toISOString().slice(0, 10);
 
-      // Paso 1: obtener el __RequestVerificationToken de la pagina
-      const tokenInfo = await getVerificationToken(cookies, dianHost);
-      const rvt = tokenInfo.token;
-      const newCookies = tokenInfo.cookies;
+      // Si ya viene el token pre-obtenido usarlo, si no obtenerlo (compatibilidad)
+      let rvt, newCookies;
+      if (rvtPre) {
+        rvt = rvtPre;
+        newCookies = cookies;
+      } else {
+        const tokenInfo = await getVerificationToken(cookies, dianHost);
+        rvt = tokenInfo.token;
+        newCookies = tokenInfo.cookies;
+      }
 
       // Paso 2: llamar a GetDocumentsPageToken con los parametros exactos del portal
       const formBody = [
