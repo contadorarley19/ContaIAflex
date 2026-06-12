@@ -364,9 +364,17 @@ exports.handler = async (event) => {
       const { cookies, trackIds, dianHost: dh3 } = body;
       const dianHost3 = dh3 || DIAN_HOST_PROD;
       if (!cookies || !Array.isArray(trackIds)) return { statusCode: 400, headers, body: JSON.stringify({ error: "cookies y trackIds[] requeridos" }) };
-      const CONCURRENCY = 5;
+      const CONCURRENCY = 3;
       const resultados = [], errores = [];
+      // Límite de tiempo total: 22s para no superar los 26s de Netlify
+      const tStart = Date.now();
+      const TIME_LIMIT = 22000;
       for (let i = 0; i < trackIds.length; i += CONCURRENCY) {
+        // Si ya llevamos más de 22s, detener y reportar los restantes como error
+        if (Date.now() - tStart > TIME_LIMIT) {
+          trackIds.slice(i).forEach(tid => errores.push({ trackId: tid, error: "Tiempo limite alcanzado - reintentar" }));
+          break;
+        }
         const lote = trackIds.slice(i, i + CONCURRENCY);
         await Promise.all(lote.map(async (trackId) => {
           try {
@@ -376,12 +384,11 @@ exports.handler = async (event) => {
             if (!isZip) throw new Error("No es ZIP");
             const xmlContent = extractXmlFromZip(result.rawBuffer);
             if (!xmlContent) throw new Error("Sin XML");
-            // Enviar XML como base64 para evitar problemas de encoding/caracteres especiales
             const xmlB64 = Buffer.from(xmlContent, "utf8").toString("base64");
             resultados.push({ trackId, xml: xmlB64, encoding: "base64", zipSize: result.rawBuffer.length });
           } catch(e) { errores.push({ trackId, error: e.message }); }
         }));
-        if (i + CONCURRENCY < trackIds.length) await new Promise(r => setTimeout(r, 500));
+        if (i + CONCURRENCY < trackIds.length) await new Promise(r => setTimeout(r, 300));
       }
       return { statusCode: 200, headers, body: JSON.stringify({ ok: true, resultados, errores, total: trackIds.length, exitosos: resultados.length }) };
     }
