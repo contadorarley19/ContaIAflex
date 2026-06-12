@@ -311,13 +311,29 @@ exports.handler = async (event) => {
     }
 
     // ── LIST ──────────────────────────────────────────────────────────────────
+    // ── OBTENER TOKEN DE VERIFICACIÓN (llamada separada para evitar timeout) ──────
+    if (action === "get_token") {
+      const { cookies, dianHost: dh } = body;
+      const dianHost = dh || DIAN_HOST_PROD;
+      if (!cookies) return { statusCode: 400, headers, body: JSON.stringify({ error: "Cookies requeridas" }) };
+      const tokenInfo = await getVerificationToken(cookies, dianHost);
+      return { statusCode: 200, headers, body: JSON.stringify({ ok: true, token: tokenInfo.token, cookies: tokenInfo.cookies }) };
+    }
+
     if (action === "list") {
-      const { cookies, desde, hasta, dianHost: dh } = body;
+      const { cookies, desde, hasta, dianHost: dh, verificationToken } = body;
       const dianHost = dh || DIAN_HOST_PROD;
       if (!cookies) return { statusCode: 400, headers, body: JSON.stringify({ error: "Cookies requeridas" }) };
       const startDate = desde || new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0, 10);
       const endDate   = hasta || new Date().toISOString().slice(0, 10);
-      const tokenInfo  = await getVerificationToken(cookies, dianHost);
+
+      // Si ya viene el token, usarlo directamente; si no, obtenerlo (compatibilidad)
+      let tokenInfo;
+      if (verificationToken) {
+        tokenInfo = { token: verificationToken, cookies };
+      } else {
+        tokenInfo = await getVerificationToken(cookies, dianHost);
+      }
       const newCookies = tokenInfo.cookies;
       const formBody = [
         "draw=1","start=0","length=500",
@@ -328,7 +344,7 @@ exports.handler = async (event) => {
         "FilterType=3","blockIndex=0","RadianStatus=0",
         `__RequestVerificationToken=${encodeURIComponent(tokenInfo.token)}`,
       ].join("&");
-      const result       = await dianRequest("/Document/GetDocumentsPageToken", newCookies, "POST", formBody, dianHost, 25000);
+      const result       = await dianRequest("/Document/GetDocumentsPageToken", newCookies, "POST", formBody, dianHost, 24000);
       const finalCookies = mergeCookies(newCookies, result.cookies);
       let data;
       try { data = JSON.parse(result.body); }
