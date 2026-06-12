@@ -246,7 +246,13 @@ exports.handler = async (event) => {
         return { statusCode: 401, headers, body: JSON.stringify({ error: "No se obtuvo sesion. El token expiro o ya fue usado." }) };
       }
 
-      return { statusCode: 200, headers, body: JSON.stringify({ ok: true, cookies, dianHost, mensaje: "Sesion DIAN iniciada" }) };
+      // Extraer __RequestVerificationToken de la última página cargada
+      // (que es /Document/Received después de los redirects)
+      // Así el frontend puede pasarlo directamente a "list" sin otra llamada
+      const rvtMatch = result.body.match(/name="__RequestVerificationToken"[^>]+value="([^"]+)"/);
+      const rvt = rvtMatch ? rvtMatch[1] : "";
+
+      return { statusCode: 200, headers, body: JSON.stringify({ ok: true, cookies, dianHost, rvt, mensaje: "Sesion DIAN iniciada" }) };
     }
 
     // ── GET TOKEN (llamada separada para evitar timeout Netlify 26s) ─────────
