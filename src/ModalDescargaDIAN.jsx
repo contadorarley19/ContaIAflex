@@ -47,6 +47,8 @@ function b64ToUtf8(b64) {
 // ─────────────────────────────────────────────────────────────────────────────
 export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescargados }) {
   const [paso,           setPaso]           = useState("token");
+  const [modoAuth,       setModoAuth]       = useState("url");
+  const [cookiesManual,  setCookiesManual]  = useState("");
   const [tokenUrl,       setTokenUrl]       = useState("");
   const [cookies,        setCookies]        = useState("");
   const [dianHost,       setDianHost]       = useState("");
@@ -71,20 +73,33 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
 
   // ── PASO 1: Autenticar ────────────────────────────────────────────────────
   const autenticar = async () => {
-    if (!tokenUrl.includes("catalogo-vpfe")) {
-      setError("Pega la URL completa que llegó al correo del representante legal");
-      return;
-    }
     setCargando(true); setError("");
     addLog("Conectando con el portal DIAN...", "info");
     try {
-      const res = await dianProxy("auth", { tokenUrl });
-      setCookies(res.cookies);
-      setDianHost(res.dianHost || "");
-      addLog("✓ Sesión DIAN iniciada correctamente", "ok");
+      let ckFinal = "", dhFinal = "";
+
+      if (modoAuth === "cookies") {
+        // Modo cookies manual — usar directamente sin llamar a auth
+        if (!cookiesManual.trim()) { setError("Pega las cookies del portal DIAN"); setCargando(false); return; }
+        ckFinal = cookiesManual.trim();
+        dhFinal = "catalogo-vpfe.dian.gov.co";
+        addLog("✓ Cookies cargadas manualmente", "ok");
+      } else {
+        // Modo URL token
+        if (!tokenUrl.includes("catalogo-vpfe")) {
+          setError("Pega la URL completa que llegó al correo del representante legal");
+          setCargando(false); return;
+        }
+        const res = await dianProxy("auth", { tokenUrl });
+        ckFinal = res.cookies;
+        dhFinal = res.dianHost || "";
+        addLog("✓ Sesión DIAN iniciada correctamente", "ok");
+      }
+
+      setCookies(ckFinal);
+      setDianHost(dhFinal);
       setPaso("lista");
-      // Cargar facturas automáticamente al autenticar
-      await _listarFacturas(res.cookies, res.dianHost || "");
+      await _listarFacturas(ckFinal, dhFinal);
     } catch(e) {
       setError(e.message);
       addLog(`✗ Error: ${e.message}`, "error");
@@ -385,17 +400,48 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
           {/* TOKEN */}
           {paso === "token" && (
             <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
-              <div style={{ background:"rgba(0,102,255,.06)", border:"1px solid rgba(0,102,255,.2)", borderRadius:10, padding:"14px 16px", fontSize:12, color:"#60a5fa", lineHeight:1.7 }}>
-                <strong>¿Cómo funciona?</strong><br/>
-                La DIAN envía un correo al representante legal con un link de acceso único.
-                Cópialo completo y pégalo aquí. El sistema descarga <strong>todas las facturas en una sola operación</strong> sin múltiples llamadas que agoten la sesión.
+              {/* Tabs: Token URL vs Cookies manuales */}
+              <div style={{ display:"flex", gap:0, borderBottom:"1px solid #1e2235" }}>
+                {[["url","🔗 Token URL"],["cookies","🍪 Pegar Cookies"]].map(([id,lbl])=>(
+                  <button key={id} onClick={()=>setModoAuth(id)}
+                    style={{ padding:"8px 16px", border:"none", background:"transparent", cursor:"pointer",
+                      fontSize:12, fontWeight:600, fontFamily:"inherit",
+                      color:modoAuth===id?"#00e5a0":"#475569",
+                      borderBottom:modoAuth===id?"2px solid #00e5a0":"2px solid transparent" }}>
+                    {lbl}
+                  </button>
+                ))}
               </div>
-              <div>
-                <div style={{ fontSize:11, color:"#64748b", textTransform:"uppercase", letterSpacing:".08em", marginBottom:6, fontWeight:600 }}>URL del token DIAN</div>
-                <div style={{ fontSize:10, color:"#475569", marginBottom:8 }}>Ejemplo: https://catalogo-vpfe.dian.gov.co/User/AuthToken?pk=...&token=...</div>
-                <textarea value={tokenUrl} onChange={e=>{setTokenUrl(e.target.value);setError("");}} placeholder="https://catalogo-vpfe.dian.gov.co/User/AuthToken?pk=...&token=..." rows={3}
-                  style={{ width:"100%", background:"#0d101a", border:`1px solid ${tokenUrl?"#2d5a3d":"#2d3352"}`, color:"#e2e8f0", borderRadius:8, padding:"10px 14px", fontFamily:"monospace", fontSize:11, outline:"none", resize:"vertical", lineHeight:1.6 }} />
-              </div>
+
+              {modoAuth === "url" && <>
+                <div style={{ background:"rgba(0,102,255,.06)", border:"1px solid rgba(0,102,255,.2)", borderRadius:10, padding:"14px 16px", fontSize:12, color:"#60a5fa", lineHeight:1.7 }}>
+                  <strong>¿Cómo funciona?</strong><br/>
+                  La DIAN envía un correo al representante legal con un link de acceso único. Cópialo completo y pégalo aquí.
+                </div>
+                <div>
+                  <div style={{ fontSize:11, color:"#64748b", textTransform:"uppercase", letterSpacing:".08em", marginBottom:6, fontWeight:600 }}>URL del token DIAN</div>
+                  <textarea value={tokenUrl} onChange={e=>{setTokenUrl(e.target.value);setError("");}} placeholder="https://catalogo-vpfe.dian.gov.co/User/AuthToken?pk=...&token=..." rows={3}
+                    style={{ width:"100%", background:"#0d101a", border:`1px solid ${tokenUrl?"#2d5a3d":"#2d3352"}`, color:"#e2e8f0", borderRadius:8, padding:"10px 14px", fontFamily:"monospace", fontSize:11, outline:"none", resize:"vertical", lineHeight:1.6 }} />
+                </div>
+              </>}
+
+              {modoAuth === "cookies" && <>
+                <div style={{ background:"rgba(255,165,0,.06)", border:"1px solid rgba(255,165,0,.2)", borderRadius:10, padding:"14px 16px", fontSize:12, color:"#fbbf24", lineHeight:1.8 }}>
+                  <strong>Cómo obtener las cookies:</strong><br/>
+                  1. Abra <strong>catalogo-vpfe.dian.gov.co</strong> en Chrome y entre normalmente<br/>
+                  2. Presione <strong>F12</strong> → Application → Cookies → catalogo-vpfe.dian.gov.co<br/>
+                  3. Abra la consola (F12 → Console) y ejecute:<br/>
+                  <code style={{background:"#1e2235",padding:"4px 8px",borderRadius:4,display:"block",marginTop:6,fontSize:11}}>copy(document.cookie)</code>
+                  4. Pegue el resultado aquí abajo
+                </div>
+                <div>
+                  <div style={{ fontSize:11, color:"#64748b", textTransform:"uppercase", letterSpacing:".08em", marginBottom:6, fontWeight:600 }}>Cookies del portal DIAN</div>
+                  <textarea value={cookiesManual} onChange={e=>{setCookiesManual(e.target.value);setError("");}}
+                    placeholder="ASP.NET_SessionId=abc123; afd_azwaf_jsclearance=eyJ...; __RequestVerificationToken=xyz..." rows={4}
+                    style={{ width:"100%", background:"#0d101a", border:`1px solid ${cookiesManual?"#2d5a3d":"#2d3352"}`, color:"#e2e8f0", borderRadius:8, padding:"10px 14px", fontFamily:"monospace", fontSize:10, outline:"none", resize:"vertical", lineHeight:1.6 }} />
+                </div>
+              </>}
+
               <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
                 {[["Desde",desde,setDesde],["Hasta",hasta,setHasta]].map(([label,val,set])=>(
                   <div key={label}>
@@ -519,9 +565,9 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
           <button onClick={onClose} style={{ background:"transparent", border:"1px solid #2d3352", color:"#94a3b8", borderRadius:6, padding:"9px 18px", cursor:"pointer", fontSize:13, fontWeight:600 }}>Cancelar</button>
 
           {paso==="token" && (
-            <button onClick={autenticar} disabled={cargando||!tokenUrl}
-              style={{ background:cargando||!tokenUrl?"#1e2235":"linear-gradient(135deg,#0066ff,#0099ff)", color:cargando||!tokenUrl?"#475569":"#fff", border:"none", borderRadius:6, padding:"9px 24px", cursor:cargando||!tokenUrl?"not-allowed":"pointer", fontSize:13, fontWeight:700, display:"flex", alignItems:"center", gap:8 }}>
-              {cargando ? <><span style={{animation:"spin 1s linear infinite",display:"inline-block"}}>⚙</span> Conectando...</> : "🔐 Autenticar con DIAN →"}
+            <button onClick={autenticar} disabled={cargando||(modoAuth==="url"?!tokenUrl:!cookiesManual)}
+              style={{ background:(cargando||(modoAuth==="url"?!tokenUrl:!cookiesManual))?"#1e2235":"linear-gradient(135deg,#0066ff,#0099ff)", color:(cargando||(modoAuth==="url"?!tokenUrl:!cookiesManual))?"#475569":"#fff", border:"none", borderRadius:6, padding:"9px 24px", cursor:"pointer", fontSize:13, fontWeight:700, display:"flex", alignItems:"center", gap:8 }}>
+              {cargando ? <><span style={{animation:"spin 1s linear infinite",display:"inline-block"}}>⚙</span> Conectando...</> : modoAuth==="cookies" ? "🍪 Usar cookies →" : "🔐 Autenticar con DIAN →"}
             </button>
           )}
 
