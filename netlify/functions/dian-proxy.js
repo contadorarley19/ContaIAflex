@@ -15,26 +15,42 @@ function mergeCookies(existing, incoming) {
   return Object.entries(map).map(([k, v]) => `${k}=${v}`).join("; ");
 }
 
-function dianRequest(path, cookies, method, bodyStr, host) {
+function dianRequest(path, cookies, method, bodyStr, host, isBrowser) {
   method = method || "GET";
   host = host || DIAN_HOST_PROD;
   return new Promise((resolve, reject) => {
     const bodyBuf = bodyStr ? Buffer.from(bodyStr, "utf8") : null;
+    // isBrowser=true para auth (simula navegador real), false para XHR
+    const browserHeaders = {
+      "Cookie":          cookies || "",
+      "User-Agent":      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+      "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+      "Accept-Encoding": "gzip, deflate, br",
+      "Accept-Language": "es-CO,es;q=0.9,en;q=0.8",
+      "Cache-Control":   "no-cache",
+      "Pragma":          "no-cache",
+      "Upgrade-Insecure-Requests": "1",
+      "Sec-Fetch-Dest":  "document",
+      "Sec-Fetch-Mode":  "navigate",
+      "Sec-Fetch-Site":  "none",
+      "Sec-Fetch-User":  "?1",
+    };
+    const xhrHeaders = {
+      "Cookie":           cookies || "",
+      "User-Agent":       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
+      "Accept":           "application/json, text/javascript, */*; q=0.01",
+      "Accept-Encoding":  "gzip, deflate, br",
+      "Accept-Language":  "es-ES,es;q=0.9",
+      "Referer":          "https://" + host + "/Document/Received",
+      "X-Requested-With": "XMLHttpRequest",
+      ...(bodyBuf ? {
+        "Content-Type":   "application/x-www-form-urlencoded; charset=UTF-8",
+        "Content-Length": String(bodyBuf.length)
+      } : {}),
+    };
     const options = {
       hostname: host, port: 443, path, method,
-      headers: {
-        "Cookie":           cookies || "",
-        "User-Agent":       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/148.0.0.0 Safari/537.36",
-        "Accept":           "application/json, text/javascript, */*; q=0.01",
-        "Accept-Encoding":  "gzip, deflate, br",
-        "Accept-Language":  "es-ES,es;q=0.9",
-        "Referer":          "https://" + host + "/Document/Received",
-        "X-Requested-With": "XMLHttpRequest",
-        ...(bodyBuf ? {
-          "Content-Type":   "application/x-www-form-urlencoded; charset=UTF-8",
-          "Content-Length": String(bodyBuf.length)
-        } : {}),
-      },
+      headers: isBrowser ? browserHeaders : xhrHeaders,
     };
     const req = https.request(options, (res) => {
       const setCookies = res.headers["set-cookie"] || [];
@@ -228,18 +244,21 @@ exports.handler = async (event) => {
       // Detectar ambiente según el host del token
       const dianHost = url.hostname.includes("-hab") ? DIAN_HOST_HAB : DIAN_HOST_PROD;
 
-      let result = await dianRequest(path, "", "GET", null, dianHost);
+      // Usar modo browser para auth (simula navegador real que la DIAN espera)
+      let result = await dianRequest(path, "", "GET", null, dianHost, true);
       let cookies = result.cookies;
 
-      // Seguir hasta 5 redirects
+      // Seguir hasta 8 redirects (la DIAN puede tener más pasos ahora)
       let redirects = 0;
-      while ((result.statusCode === 301 || result.statusCode === 302 || result.statusCode === 303) && redirects < 5) {
+      while ((result.statusCode === 301 || result.statusCode === 302 || result.statusCode === 303) && redirects < 8) {
         const loc = result.headers["location"] || "";
         const rPath = loc.startsWith("http") ? (new URL(loc)).pathname + (new URL(loc)).search : loc;
         cookies = mergeCookies(cookies, result.cookies);
-        result = await dianRequest(rPath, cookies, "GET", null, dianHost);
+        console.log(`Redirect ${redirects+1}: ${rPath} (status ${result.statusCode})`);
+        result = await dianRequest(rPath, cookies, "GET", null, dianHost, true);
         redirects++;
       }
+      console.log(`Auth final status: ${result.statusCode}, cookies: ${cookies?.slice(0,100)}`);
       cookies = mergeCookies(cookies, result.cookies);
 
       // Verificar que se obtuvo alguna cookie de sesión
