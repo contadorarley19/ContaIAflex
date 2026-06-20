@@ -258,7 +258,10 @@ exports.handler = async (event) => {
         result = await dianRequest(rPath, cookies, "GET", null, dianHost, true);
         redirects++;
       }
-      console.log(`Auth final status: ${result.statusCode}, cookies: ${cookies?.slice(0,100)}`);
+      console.log(`Auth final status: ${result.statusCode}`);
+      console.log(`Cookies obtenidas: ${cookies?.slice(0,200)}`);
+      console.log(`Body primeros 500: ${result.body?.slice(0,500)}`);
+      console.log(`Headers: ${JSON.stringify(result.headers).slice(0,300)}`);
       cookies = mergeCookies(cookies, result.cookies);
 
       // Verificar que se obtuvo alguna cookie de sesión
@@ -274,7 +277,10 @@ exports.handler = async (event) => {
       console.log("Cookies obtenidas:", cookieNames.join(", "));
       console.log("Status final:", result.statusCode);
       if (!cookies || result.statusCode === 401 || result.statusCode === 403) {
-        return { statusCode: 401, headers, body: JSON.stringify({ error: "No se obtuvo sesion. El token expiro o ya fue usado." }) };
+        return { statusCode: 401, headers, body: JSON.stringify({ 
+          error: "No se obtuvo sesion. El token expiro o ya fue usado.",
+          debug: { status: result.statusCode, cookies: cookies?.slice(0,100), body: result.body?.slice(0,300) }
+        }) };
       }
 
       // Extraer __RequestVerificationToken de la última página cargada
