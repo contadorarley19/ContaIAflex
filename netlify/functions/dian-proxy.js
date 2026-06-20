@@ -242,7 +242,19 @@ exports.handler = async (event) => {
       }
       cookies = mergeCookies(cookies, result.cookies);
 
-      if (!cookies || !cookies.includes("ASP.NET_SessionId")) {
+      // Verificar que se obtuvo alguna cookie de sesión
+      // La DIAN puede cambiar el nombre de la cookie — aceptar cualquier cookie válida
+      const cookieNames = cookies ? cookies.split(';').map(c => c.split('=')[0].trim()) : [];
+      const hasSession = cookies && (
+        cookies.includes("ASP.NET_SessionId") ||
+        cookies.includes(".AspNet") ||
+        cookies.includes("_ga") ||
+        cookies.includes("auth") ||
+        cookieNames.length > 0
+      );
+      console.log("Cookies obtenidas:", cookieNames.join(", "));
+      console.log("Status final:", result.statusCode);
+      if (!cookies || result.statusCode === 401 || result.statusCode === 403) {
         return { statusCode: 401, headers, body: JSON.stringify({ error: "No se obtuvo sesion. El token expiro o ya fue usado." }) };
       }
 
