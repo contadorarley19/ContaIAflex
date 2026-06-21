@@ -144,13 +144,24 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
     const dhActual = dh || dianHost;
     setCargando(true); setError("");
     try {
-      // Llamada 1: obtener token de verificación (~8s, bien bajo el límite de 26s)
+      // ─── Si la extensión está disponible, usarla (bypass Cloudflare) ───
+      if (extDisponible()) {
+        addLog("✓ Extensión detectada — usando tu sesión del navegador", "ok");
+        addLog(`Consultando facturas del ${fmtFecha(desde)} al ${fmtFecha(hasta)}...`, "info");
+        const res = await extPeticion("LISTAR", { desde, hasta });
+        setFacturas(res.facturas || []);
+        setSeleccion(new Set((res.facturas || []).map(f => f.trackId)));
+        addLog(`✓ ${res.facturas.length} facturas encontradas`, "ok");
+        if (res.facturas.length === 0) addLog("Sin facturas en ese rango.", "warn");
+        setCargando(false);
+        return;
+      }
+
+      // ─── Sin extensión: usar el proxy de Netlify (puede fallar por Cloudflare) ───
       addLog("Obteniendo token de verificación...", "info");
       const tokRes = await dianProxy("get_token", { cookies: ckActual, dianHost: dhActual });
       const ck2 = tokRes.cookies || ckActual;
       setCookies(ck2);
-
-      // Llamada 2: consultar facturas con el token ya obtenido (~10s)
       addLog(`Consultando facturas del ${fmtFecha(desde)} al ${fmtFecha(hasta)}...`, "info");
       const res = await dianProxy("list", { cookies: ck2, desde, hasta, dianHost: dhActual, rvt: tokRes.token });
       setCookies(res.cookies || ck2);
