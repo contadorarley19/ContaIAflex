@@ -157,10 +157,23 @@ function parseDianDate(val) {
   return d.toISOString().slice(0, 10);
 }
 
-// Obtener el __RequestVerificationToken del HTML de la pagina
+// Obtener el __RequestVerificationToken
+// Primero intenta extraerlo de las cookies (cuando vienen del browser)
+// Si no está, hace GET /Document/Received para obtenerlo
 async function getVerificationToken(cookies, host) {
   host = host || DIAN_HOST_PROD;
-  const result = await dianRequest("/Document/Received", cookies, "GET", null, host);
+  
+  // Intentar extraer el token directamente de las cookies del request
+  // (cuando el usuario pega las cookies del browser, ya viene el token)
+  const cookieMatch = cookies && cookies.match(/__RequestVerificationToken=([^;]+)/);
+  if (cookieMatch) {
+    console.log("RVT extraído de cookies directamente");
+    return { token: decodeURIComponent(cookieMatch[1]), cookies };
+  }
+  
+  // Si no está en las cookies, hacer GET para obtenerlo
+  console.log("RVT no en cookies, haciendo GET /Document/Received");
+  const result = await dianRequest("/Document/Received", cookies, "GET", null, host, true);
   const newCookies = mergeCookies(cookies, result.cookies);
   const match = result.body.match(/name="__RequestVerificationToken"[^>]+value="([^"]+)"/);
   const token = match ? match[1] : "";
