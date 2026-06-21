@@ -3,12 +3,6 @@
 //
 // Hace los requests a la DIAN DESDE EL NAVEGADOR del usuario (que ya pasó
 // Cloudflare), no desde un servidor. Así evita el bloqueo de Cloudflare.
-//
-// Flujo:
-//   1. content.js (en contaiaflex.netlify.app) pide listar/descargar
-//   2. background.js hace fetch a la DIAN con las cookies de la sesión activa
-//      (el navegador adjunta automáticamente las cookies del dominio DIAN)
-//   3. devuelve los datos al content.js
 // ─────────────────────────────────────────────────────────────────────────────
 
 const DIAN_HOST = "https://catalogo-vpfe.dian.gov.co";
@@ -17,7 +11,7 @@ const DIAN_HOST = "https://catalogo-vpfe.dian.gov.co";
 async function getVerificationToken() {
   const res = await fetch(`${DIAN_HOST}/Document/Received`, {
     method: "GET",
-    credentials: "include",  // adjunta cookies del dominio DIAN automáticamente
+    credentials: "include",
     headers: {
       "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     },
@@ -79,61 +73,39 @@ async function listarFacturas(desde, hasta) {
   }));
 }
 
-// Descargar el ZIP de una factura y extraer el XML
-async function descargarXML(trackId) {
+// Descargar el ZIP de una factura y devolverlo como base64
+// (la extracción del XML la hace el ContaIA con JSZip que es más robusto)
+async function descargarZipB64(trackId) {
   const res = await fetch(`${DIAN_HOST}/Document/DownloadZipFiles?trackId=${trackId}`, {
     method: "GET",
     credentials: "include",
+    headers: {
+      "Accept": "*/*",
+    },
   });
   if (!res.ok) throw new Error("HTTP " + res.status);
 
   const buffer = await res.arrayBuffer();
   const bytes = new Uint8Array(buffer);
 
-  // Verificar que es un ZIP (firma PK)
-  if (bytes[0] !== 0x50 || bytes[1] !== 0x4b) throw new Error("No es ZIP");
-
-  // Extraer XML del ZIP usando la API de descompresión nativa
-  const xml = await extraerXmlDeZip(bytes);
-  if (!xml) throw new Error("Sin XML en el ZIP");
-  return xml;
-}
-
-// Extraer XML de un ZIP (parser mínimo de ZIP con DecompressionStream)
-async function extraerXmlDeZip(bytes) {
-  const dv = new DataView(bytes.buffer);
-  let pos = 0;
-  while (pos < bytes.length - 4) {
-    // Buscar firma de local file header: PK\x03\x04
-    if (dv.getUint32(pos, true) === 0x04034b50) {
-      const compMethod = dv.getUint16(pos + 8, true);
-      const compSize   = dv.getUint32(pos + 18, true);
-      const nameLen    = dv.getUint16(pos + 26, true);
-      const extraLen   = dv.getUint16(pos + 28, true);
-      const nameStart  = pos + 30;
-      const name       = new TextDecoder().decode(bytes.slice(nameStart, nameStart + nameLen));
-      const dataStart  = nameStart + nameLen + extraLen;
-      const compData   = bytes.slice(dataStart, dataStart + compSize);
-
-      if (name.toLowerCase().endsWith(".xml")) {
-        let content;
-        if (compMethod === 0) {
-          // Sin compresión
-          content = new TextDecoder().decode(compData);
-        } else if (compMethod === 8) {
-          // Deflate — usar DecompressionStream nativo
-          const ds = new DecompressionStream("deflate-raw");
-          const stream = new Blob([compData]).stream().pipeThrough(ds);
-          content = await new Response(stream).text();
-        }
-        return content;
-      }
-      pos = dataStart + compSize;
-    } else {
-      pos++;
+  // Verificar que es un ZIP (firma PK = 0x50 0x4b)
+  if (bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) {
+    // Puede ser que devolvió HTML de error o el XML directo
+    const texto = new TextDecoder().decode(bytes.slice(0, Math.min(bytes.length, 200)));
+    if (texto.includes("<?xml") || texto.includes("<Invoice") || texto.includes("<AttachedDocument")) {
+      // Es XML directo, no ZIP
+      return { tipo: "xml", contenido: new TextDecoder().decode(bytes) };
     }
+    throw new Error("No es ZIP ni XML (HTTP " + res.status + ")");
   }
-  return null;
+
+  // Convertir ZIP a base64 para mandarlo al ContaIA
+  let binary = "";
+  const chunk = 8192;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, bytes.slice(i, i + chunk));
+  }
+  return { tipo: "zip", contenido: btoa(binary) };
 }
 
 // Listener de mensajes desde content.js
@@ -141,15 +113,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     try {
       if (msg.tipo === "PING") {
-        sendResponse({ ok: true, instalada: true, version: "1.0.0" });
+        sendResponse({ ok: true, instalada: true, version: "1.0.1" });
       }
       else if (msg.tipo === "LISTAR") {
         const facturas = await listarFacturas(msg.desde, msg.hasta);
         sendResponse({ ok: true, facturas });
       }
-      else if (msg.tipo === "DESCARGAR_XML") {
-        const xml = await descargarXML(msg.trackId);
-        sendResponse({ ok: true, xml });
+      else if (msg.tipo === "DESCARGAR_ZIP") {
+        const result = await descargarZipB64(msg.trackId);
+        sendResponse({ ok: true, ...result });
       }
       else {
         sendResponse({ ok: false, error: "Acción desconocida" });
@@ -158,5 +130,5 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse({ ok: false, error: e.message });
     }
   })();
-  return true; // respuesta asíncrona
+  return true;
 });
