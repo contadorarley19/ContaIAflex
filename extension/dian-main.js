@@ -99,46 +99,36 @@
     });
   }
 
-  async function intentarDescarga(trackId, token) {
-    const url = `/Document/DownloadZipFiles?trackId=${trackId}&captcha=${encodeURIComponent(token)}`;
-    const res = await fetch(url, { method: "GET", credentials: "include", headers: { "Accept": "*/*" } });
-    if (!res.ok) return { fallo: "HTTP " + res.status };
-
-    const bytes = new Uint8Array(await res.arrayBuffer());
-    // ¿ZIP? (magic bytes PK)
-    if (bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b) {
-      let binary = "";
-      for (let i = 0; i < bytes.length; i += 8192) {
-        binary += String.fromCharCode.apply(null, bytes.slice(i, i + 8192));
+  // Buscar el botón de descarga nativo del portal por su data-id.
+  // El listado nos pasa trackId y/o identifier; probamos ambos.
+  function buscarBotonDescarga(ids) {
+    const botones = document.querySelectorAll("button.download-document, a.download-document, [class*='download-document']");
+    for (const b of botones) {
+      const did = b.getAttribute("data-id") || b.id || "";
+      for (const id of ids) {
+        if (id && did && did === id) return b;
       }
-      return { tipo: "zip", contenido: btoa(binary) };
     }
-    // ¿XML directo?
-    const txt = new TextDecoder().decode(bytes.slice(0, 200));
-    if (txt.includes("<?xml") || txt.includes("<Invoice") || txt.includes("<AttachedDocument")) {
-      return { tipo: "xml", contenido: new TextDecoder().decode(bytes) };
-    }
-    // Captcha rechazado u otra cosa
-    return { fallo: "captcha" };
+    return null;
   }
 
-  async function descargar(trackId) {
-    // Hasta 3 intentos: cada uno con un token fresco distinto
-    let ultimoError = "";
-    for (let intento = 1; intento <= 3; intento++) {
-      const token = await esperarTokenNuevo(_tokenUsado, 25000);
-      if (!token) { ultimoError = "Captcha no disponible"; continue; }
+  // Descargar haciendo CLIC en el botón nativo del portal.
+  // El portal genera el token fresco solo (flujo nativo) → descarga a la carpeta del usuario.
+  async function descargar(trackId, identifier) {
+    const ids = [identifier, trackId].filter(Boolean);
+    const btn = buscarBotonDescarga(ids);
 
-      const r = await intentarDescarga(trackId, token);
-      _tokenUsado = token; // marcar como usado pase lo que pase
-
-      if (r.tipo) return r;          // éxito (zip o xml)
-      ultimoError = r.fallo;
-      // El token se consumió: forzar regeneración para el siguiente intento
-      resetTurnstile();
-      await new Promise(s => setTimeout(s, 800));
+    if (!btn) {
+      throw new Error("No encontré el botón de descarga de esta factura en el portal. Asegúrate de que esté visible en la lista.");
     }
-    throw new Error("No se pudo descargar tras 3 intentos (" + ultimoError + ")");
+
+    // Clic nativo → el portal hace todo (token fresco + descarga al PC)
+    btn.click();
+
+    // Dar tiempo a que el portal procese el captcha y dispare la descarga
+    await new Promise(s => setTimeout(s, 1500));
+
+    return { tipo: "click", ok: true };
   }
 
   // ── LISTADO de facturas (corre en la página → pasa Cloudflare) ──
@@ -224,7 +214,7 @@
         const facturas = await listarFacturas(d.desde, d.hasta);
         responder({ ok: true, facturas });
       } else if (d.tipo === "DESCARGAR_EN_DIAN") {
-        const r = await descargar(d.trackId);
+        const r = await descargar(d.trackId, d.identifier);
         responder({ ok: true, ...r });
       } else if (d.tipo === "RESET_TOKEN") {
         _tokenUsado = ""; resetTurnstile();
