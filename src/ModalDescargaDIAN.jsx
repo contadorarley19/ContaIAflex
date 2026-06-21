@@ -213,21 +213,32 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
         });
       }
       const xmlsOk = [];
+      let clicksOk = 0;
       for (let i = 0; i < trackIds.length; i++) {
         const trackId = trackIds[i];
         const f = facturas.find(x => x.trackId === trackId);
         try {
-          const res = await extPeticion("DESCARGAR_ZIP", { trackId });
+          const res = await extPeticion("DESCARGAR_ZIP", { trackId, identifier: f?.identifier });
+
+          // MODO CLIC NATIVO: el portal descarga el archivo directo a la carpeta del PC
+          if (res.tipo === "click") {
+            clicksOk++;
+            addLog(`✓ ${f?.emisor || trackId.slice(0,8)} — descargado al PC`, "ok");
+            // pausa entre clics para no saturar el portal y dejar regenerar el captcha
+            await new Promise(s => setTimeout(s, 1200));
+            setProgreso({ actual: clicksOk, total: trackIds.length });
+            continue;
+          }
+
+          // MODO CONTENIDO (por si vuelve XML/ZIP): extraer XML
           let xmlContenido = "";
           if (res.tipo === "xml") {
             xmlContenido = res.contenido;
           } else {
-            // Es ZIP en base64 — extraer XML con JSZip
             const binary = atob(res.contenido);
             const bytes = new Uint8Array(binary.length);
             for (let j = 0; j < binary.length; j++) bytes[j] = binary.charCodeAt(j);
             const zip = await window.JSZip.loadAsync(bytes);
-            // Buscar el archivo .xml dentro del ZIP
             const xmlFile = Object.values(zip.files).find(file => file.name.toLowerCase().endsWith(".xml"));
             if (!xmlFile) throw new Error("Sin XML en el ZIP");
             xmlContenido = await xmlFile.async("string");
@@ -238,7 +249,15 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
         } catch(e) {
           addLog(`⚠ ${f?.emisor || trackId.slice(0,8)}: ${e.message}`, "warn");
         }
-        setProgreso({ actual: xmlsOk.length, total: trackIds.length });
+        setProgreso({ actual: xmlsOk.length + clicksOk, total: trackIds.length });
+      }
+
+      // Si todo fue por clic nativo, los archivos ya están en el PC
+      if (clicksOk > 0 && xmlsOk.length === 0) {
+        addLog(`✓ ${clicksOk}/${trackIds.length} facturas descargadas a tu carpeta de Descargas`, "ok");
+        setCargando(false);
+        setPaso("listo");
+        return;
       }
       setXmlsDesc(prev => {
         const ex = new Set(prev.map(x => x.trackId));
