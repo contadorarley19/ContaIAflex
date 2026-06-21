@@ -44,7 +44,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       else if (msg.tipo === "DESCARGAR_ZIP") {
         const tab = await buscarTabDian();
         if (!tab) throw new Error("Abre el portal DIAN en una pestaña (Documentos Recibidos)");
-        const res = await enviarATabDian(tab, { tipo: "DESCARGAR_EN_DIAN", trackId: msg.trackId });
+        const res = await enviarATabDian(tab, { tipo: "DESCARGAR_EN_DIAN", trackId: msg.trackId, identifier: msg.identifier });
         sendResponse({ ok: true, ...res });
       }
       else {
