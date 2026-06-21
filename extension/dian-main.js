@@ -99,6 +99,93 @@
     });
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // WIDGET TURNSTILE PROPIO (modo execute) — genera tokens frescos bajo demanda
+  // Sitekey de la DIAN. Como corremos en el mismo dominio, los tokens son válidos.
+  // ─────────────────────────────────────────────────────────────────────────
+  const DIAN_SITEKEY = "0x4AAAAAAg1WuNb-OnOa76z";
+  let _miWidgetId = null;
+  let _tokenPendiente = null;     // resolver del execute en curso
+  let _widgetListo = false;
+
+  function crearWidgetPropio() {
+    return new Promise((resolve) => {
+      if (_widgetListo && _miWidgetId !== null) return resolve(true);
+      if (!window.turnstile || typeof window.turnstile.render !== "function") {
+        return resolve(false);
+      }
+      // Contenedor invisible
+      let cont = document.getElementById("contaia-ts-container");
+      if (!cont) {
+        cont = document.createElement("div");
+        cont.id = "contaia-ts-container";
+        cont.style.cssText = "position:fixed;bottom:-9999px;left:-9999px;width:300px;height:65px;";
+        document.body.appendChild(cont);
+      }
+      try {
+        _miWidgetId = window.turnstile.render(cont, {
+          sitekey: DIAN_SITEKEY,
+          execution: "execute",     // no resuelve hasta que llamemos execute()
+          appearance: "execute",
+          callback: (token) => {
+            if (_tokenPendiente) { _tokenPendiente(token); _tokenPendiente = null; }
+          },
+          "error-callback": () => {
+            if (_tokenPendiente) { _tokenPendiente(""); _tokenPendiente = null; }
+          },
+        });
+        _widgetListo = true;
+        resolve(true);
+      } catch (e) {
+        console.log("[ContaIA] No se pudo crear widget propio:", e.message);
+        resolve(false);
+      }
+    });
+  }
+
+  // Pedir un token fresco a NUESTRO widget
+  function tokenFrescoPropio(maxMs = 12000) {
+    return new Promise(async (resolve) => {
+      const ok = await crearWidgetPropio();
+      if (!ok || _miWidgetId === null) return resolve("");
+
+      let resuelto = false;
+      _tokenPendiente = (tk) => { if (!resuelto) { resuelto = true; resolve(tk); } };
+
+      try {
+        window.turnstile.reset(_miWidgetId);       // limpiar el anterior
+        window.turnstile.execute(_miWidgetId);     // generar uno nuevo
+      } catch (e) {
+        // Si execute no está disponible, intentar getResponse tras render
+        try { const tk = window.turnstile.getResponse(_miWidgetId); if (tk) { resuelto = true; return resolve(tk); } } catch(_) {}
+      }
+
+      setTimeout(() => { if (!resuelto) { resuelto = true; _tokenPendiente = null; resolve(""); } }, maxMs);
+    });
+  }
+
+  // Descargar por fetch usando un token de NUESTRO widget
+  async function descargarConTokenPropio(trackId) {
+    const token = await tokenFrescoPropio();
+    if (!token) return { fallo: "sin_token_propio" };
+
+    const url = `/Document/DownloadZipFiles?trackId=${trackId}&captcha=${encodeURIComponent(token)}`;
+    const res = await fetch(url, { method: "GET", credentials: "include", headers: { "Accept": "*/*" } });
+    if (!res.ok) return { fallo: "HTTP " + res.status };
+
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b) {
+      let binary = "";
+      for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode.apply(null, bytes.slice(i, i + 8192));
+      return { tipo: "zip", contenido: btoa(binary) };
+    }
+    const txt = new TextDecoder().decode(bytes.slice(0, 200));
+    if (txt.includes("<?xml") || txt.includes("<Invoice") || txt.includes("<AttachedDocument")) {
+      return { tipo: "xml", contenido: new TextDecoder().decode(bytes) };
+    }
+    return { fallo: "captcha_rechazado" };
+  }
+
   // Buscar el botón de descarga nativo del portal por su data-id.
   // El listado nos pasa trackId y/o identifier; probamos ambos.
   function buscarBotonDescarga(ids) {
@@ -112,22 +199,24 @@
     return null;
   }
 
-  // Descargar haciendo CLIC en el botón nativo del portal.
-  // El portal genera el token fresco solo (flujo nativo) → descarga a la carpeta del usuario.
+  // Descargar: primero intenta con NUESTRO widget (token fresco controlado);
+  // si falla, cae al clic en el botón nativo del portal.
   async function descargar(trackId, identifier) {
+    // Intento 1: fetch con token de nuestro widget propio (el trackId real para el endpoint)
+    const idParaFetch = identifier || trackId;
+    try {
+      const r = await descargarConTokenPropio(idParaFetch);
+      if (r.tipo) return r;
+    } catch (e) { /* sigue al respaldo */ }
+
+    // Respaldo: clic en el botón nativo del portal
     const ids = [identifier, trackId].filter(Boolean);
     const btn = buscarBotonDescarga(ids);
-
     if (!btn) {
-      throw new Error("No encontré el botón de descarga de esta factura en el portal. Asegúrate de que esté visible en la lista.");
+      throw new Error("No se pudo descargar: ni el token propio ni el botón nativo funcionaron.");
     }
-
-    // Clic nativo → el portal hace todo (token fresco + descarga al PC)
     btn.click();
-
-    // Dar tiempo a que el portal procese el captcha y dispare la descarga
     await new Promise(s => setTimeout(s, 1500));
-
     return { tipo: "click", ok: true };
   }
 
