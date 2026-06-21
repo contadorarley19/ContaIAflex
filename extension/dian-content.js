@@ -40,7 +40,7 @@
         } else if (msg.tipo === "LISTAR") {
           sendResponse(await pedirAlMain("LISTAR", { desde: msg.desde, hasta: msg.hasta }));
         } else if (msg.tipo === "DESCARGAR_EN_DIAN") {
-          sendResponse(await pedirAlMain("DESCARGAR_EN_DIAN", { trackId: msg.trackId }));
+          sendResponse(await pedirAlMain("DESCARGAR_EN_DIAN", { trackId: msg.trackId, identifier: msg.identifier }));
         } else if (msg.tipo === "RESET_TOKEN") {
           sendResponse(await pedirAlMain("RESET_TOKEN", {}));
         }
