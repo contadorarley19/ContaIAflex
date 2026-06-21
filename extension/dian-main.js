@@ -72,34 +72,73 @@
 
   let _tokenUsado = "";
 
-  async function descargar(trackId) {
-    let token = obtenerToken();
-    if (!token || token === _tokenUsado || tokenExpirado()) {
-      token = await esperarTokenFresco(_tokenUsado);
-    }
-    if (!token) throw new Error("Captcha no disponible — recarga la página del portal DIAN");
+  // Esperar a que haya un token NUEVO (distinto al usado) y válido.
+  // Turnstile con refresh-expired:auto regenera solo; le damos tiempo real.
+  function esperarTokenNuevo(tokenUsado, maxMs = 25000) {
+    return new Promise((resolve) => {
+      const inicio = Date.now();
+      let pidioReset = false;
 
+      const tick = () => {
+        const v = obtenerToken();
+        // Token válido = existe, no es el ya usado, y no está expirado
+        if (v && v !== tokenUsado && !tokenExpirado()) {
+          return resolve(v);
+        }
+        // A los 3s, si sigue igual, pedir reset UNA vez para forzar regeneración
+        if (!pidioReset && Date.now() - inicio > 3000) {
+          pidioReset = true;
+          resetTurnstile();
+        }
+        if (Date.now() - inicio > maxMs) {
+          return resolve(obtenerToken() || ""); // devolver lo que haya
+        }
+        setTimeout(tick, 300);
+      };
+      tick();
+    });
+  }
+
+  async function intentarDescarga(trackId, token) {
     const url = `/Document/DownloadZipFiles?trackId=${trackId}&captcha=${encodeURIComponent(token)}`;
     const res = await fetch(url, { method: "GET", credentials: "include", headers: { "Accept": "*/*" } });
-
-    _tokenUsado = token;
-    resetTurnstile(); // regenerar para la próxima
-
-    if (!res.ok) throw new Error("HTTP " + res.status);
+    if (!res.ok) return { fallo: "HTTP " + res.status };
 
     const bytes = new Uint8Array(await res.arrayBuffer());
-    if (bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) {
-      const txt = new TextDecoder().decode(bytes.slice(0, 200));
-      if (txt.includes("<?xml") || txt.includes("<Invoice") || txt.includes("<AttachedDocument")) {
-        return { tipo: "xml", contenido: new TextDecoder().decode(bytes) };
+    // ¿ZIP? (magic bytes PK)
+    if (bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b) {
+      let binary = "";
+      for (let i = 0; i < bytes.length; i += 8192) {
+        binary += String.fromCharCode.apply(null, bytes.slice(i, i + 8192));
       }
-      throw new Error("Captcha rechazado (HTTP " + res.status + ")");
+      return { tipo: "zip", contenido: btoa(binary) };
     }
-    let binary = "";
-    for (let i = 0; i < bytes.length; i += 8192) {
-      binary += String.fromCharCode.apply(null, bytes.slice(i, i + 8192));
+    // ¿XML directo?
+    const txt = new TextDecoder().decode(bytes.slice(0, 200));
+    if (txt.includes("<?xml") || txt.includes("<Invoice") || txt.includes("<AttachedDocument")) {
+      return { tipo: "xml", contenido: new TextDecoder().decode(bytes) };
     }
-    return { tipo: "zip", contenido: btoa(binary) };
+    // Captcha rechazado u otra cosa
+    return { fallo: "captcha" };
+  }
+
+  async function descargar(trackId) {
+    // Hasta 3 intentos: cada uno con un token fresco distinto
+    let ultimoError = "";
+    for (let intento = 1; intento <= 3; intento++) {
+      const token = await esperarTokenNuevo(_tokenUsado, 25000);
+      if (!token) { ultimoError = "Captcha no disponible"; continue; }
+
+      const r = await intentarDescarga(trackId, token);
+      _tokenUsado = token; // marcar como usado pase lo que pase
+
+      if (r.tipo) return r;          // éxito (zip o xml)
+      ultimoError = r.fallo;
+      // El token se consumió: forzar regeneración para el siguiente intento
+      resetTurnstile();
+      await new Promise(s => setTimeout(s, 800));
+    }
+    throw new Error("No se pudo descargar tras 3 intentos (" + ultimoError + ")");
   }
 
   // ── LISTADO de facturas (corre en la página → pasa Cloudflare) ──
