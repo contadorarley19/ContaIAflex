@@ -24,10 +24,10 @@
       const id = ++_id;
       pendientes[id] = resolve;
       window.postMessage({ source: "DIAN_CONTENT", id, tipo, ...extra }, "*");
-      // Timeout de seguridad
+      // Timeout de seguridad (amplio: la descarga puede reintentar el captcha)
       setTimeout(() => {
         if (pendientes[id]) { delete pendientes[id]; resolve({ ok: false, error: "Sin respuesta del portal (timeout)" }); }
-      }, 30000);
+      }, 90000);
     });
   }
 
