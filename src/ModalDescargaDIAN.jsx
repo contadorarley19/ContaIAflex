@@ -37,7 +37,7 @@ window.addEventListener("message", (e) => {
 function extDisponible() { return _extDisponible; }
 
 // Enviar petición a la extensión y esperar respuesta
-function extPeticion(tipo, params = {}, timeoutMs = 60000) {
+function extPeticion(tipo, params = {}, timeoutMs = 100000) {
   return new Promise((resolve, reject) => {
     const id = Math.random().toString(36).slice(2);
     const timer = setTimeout(() => {
