@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ContaIA DIAN - Descarga Directa",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Permite a ContaIA descargar facturas de la DIAN usando tu sesión del navegador (evita el bloqueo de Cloudflare).",
   "permissions": [
     "cookies",
