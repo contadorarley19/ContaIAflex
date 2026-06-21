@@ -190,6 +190,40 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
     setCargando(true); setError("");
     setPaso("descarga");
     setProgreso({ actual: 0, total: trackIds.length });
+
+    // ─── Si la extensión está disponible, descargar con ella (bypass Cloudflare) ───
+    if (extDisponible()) {
+      addLog(`Descargando ${trackIds.length} XMLs con la extensión...`, "info");
+      const xmlsOk = [];
+      for (let i = 0; i < trackIds.length; i++) {
+        const trackId = trackIds[i];
+        const f = facturas.find(x => x.trackId === trackId);
+        try {
+          const res = await extPeticion("DESCARGAR_XML", { trackId });
+          const nombre = `${(f?.emisor || "factura").replace(/[^a-zA-Z0-9]/g,"_")}_${trackId.slice(0,8)}.xml`;
+          xmlsOk.push({ nombre, contenido: res.xml, trackId, factura: f });
+          addLog(`✓ ${f?.emisor || trackId.slice(0,8)} — $${(f?.valor||0).toLocaleString("es-CO")}`, "ok");
+        } catch(e) {
+          addLog(`⚠ ${f?.emisor || trackId.slice(0,8)}: ${e.message}`, "warn");
+        }
+        setProgreso({ actual: xmlsOk.length, total: trackIds.length });
+      }
+      setXmlsDesc(prev => {
+        const ex = new Set(prev.map(x => x.trackId));
+        const total = [...prev, ...xmlsOk.filter(x => !ex.has(x.trackId))];
+        setProgreso(p => ({ actual: total.length, total: p.total || trackIds.length }));
+        setSeleccion(new Set(total.map(x => x.trackId)));
+        return total;
+      });
+      addLog(`✓ ${xmlsOk.length}/${trackIds.length} XMLs descargados`, "ok");
+      if (xmlsOk.length < trackIds.length) {
+        addLog(`⚠ ${trackIds.length - xmlsOk.length} no se pudieron descargar`, "warn");
+      }
+      setCargando(false);
+      setPaso("listo");
+      return;
+    }
+
     addLog(`Iniciando descarga de ${trackIds.length} facturas en lotes de 8...`, "info");
 
     // ── Función que hace UNA llamada batch y procesa resultado ───────────────
