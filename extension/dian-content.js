@@ -1,22 +1,57 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // dian-content.js — Se inyecta EN la página del portal DIAN
 //
-// Tiene acceso al input cf-turnstile-response que contiene el token captcha.
-// Hace las descargas usando ese token, igual que el portal lo hace.
+// El token Turnstile (captcha) es de UN SOLO USO. Después de cada descarga
+// hay que esperar a que Cloudflare regenere uno nuevo en el input oculto.
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Leer el token Turnstile del input oculto de la página
 function obtenerTurnstileValue() {
   const input = document.querySelector('input[name="cf-turnstile-response"]');
   return input ? input.value : "";
 }
 
-// Descargar XML usando el token captcha (igual que el portal en la línea 1569)
+// Forzar la regeneración del token Turnstile
+function resetTurnstile() {
+  try {
+    if (window.turnstile && typeof window.turnstile.reset === "function") {
+      window.turnstile.reset();
+      return true;
+    }
+  } catch(e) {}
+  return false;
+}
+
+// Esperar a que haya un token Turnstile NUEVO (distinto del anterior)
+async function esperarNuevoToken(tokenAnterior, maxEsperaMs = 15000) {
+  const inicio = Date.now();
+  // Intentar resetear para forzar nuevo token
+  resetTurnstile();
+  while (Date.now() - inicio < maxEsperaMs) {
+    const actual = obtenerTurnstileValue();
+    if (actual && actual !== tokenAnterior) {
+      return actual;
+    }
+    await new Promise(r => setTimeout(r, 500));
+  }
+  // Si no se regeneró, devolver el que haya (puede que el mismo siga válido)
+  return obtenerTurnstileValue();
+}
+
+let _ultimoToken = "";
+
 async function descargarXmlConCaptcha(trackId) {
-  const turnstileValue = obtenerTurnstileValue();
+  // Obtener un token nuevo (distinto al usado en la descarga anterior)
+  let turnstileValue;
+  if (_ultimoToken) {
+    turnstileValue = await esperarNuevoToken(_ultimoToken);
+  } else {
+    turnstileValue = obtenerTurnstileValue();
+  }
+
   if (!turnstileValue) {
     throw new Error("Captcha no disponible — recarga la página del portal DIAN");
   }
+  _ultimoToken = turnstileValue;
 
   const url = `/Document/DownloadZipFiles?trackId=${trackId}&captcha=${encodeURIComponent(turnstileValue)}`;
   const res = await fetch(url, {
@@ -35,7 +70,7 @@ async function descargarXmlConCaptcha(trackId) {
     if (texto.includes("<?xml") || texto.includes("<Invoice") || texto.includes("<AttachedDocument")) {
       return { tipo: "xml", contenido: new TextDecoder().decode(bytes) };
     }
-    throw new Error("No es ZIP (captcha inválido o expirado)");
+    throw new Error("Captcha expirado o inválido");
   }
 
   let binary = "";
@@ -46,7 +81,6 @@ async function descargarXmlConCaptcha(trackId) {
   return { tipo: "zip", contenido: btoa(binary) };
 }
 
-// Listener de mensajes desde el background
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     try {
@@ -57,6 +91,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const result = await descargarXmlConCaptcha(msg.trackId);
         sendResponse({ ok: true, ...result });
       }
+      else if (msg.tipo === "RESET_TOKEN") {
+        _ultimoToken = "";
+        resetTurnstile();
+        sendResponse({ ok: true });
+      }
     } catch (e) {
       sendResponse({ ok: false, error: e.message });
     }
@@ -64,4 +103,4 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return true;
 });
 
-console.log("[ContaIA DIAN] Listo en el portal DIAN. Captcha:", !!obtenerTurnstileValue());
+console.log("[ContaIA DIAN] Listo en portal DIAN. Captcha:", !!obtenerTurnstileValue());
