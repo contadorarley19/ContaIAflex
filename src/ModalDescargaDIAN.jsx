@@ -26,6 +26,37 @@ async function dianProxy(action, params = {}) {
   return data;
 }
 
+// ── Comunicación con la extensión de Chrome (bypass Cloudflare) ───────────────
+let _extDisponible = false;
+window.addEventListener("message", (e) => {
+  if (e.source === window && e.data?.source === "DIAN_EXT" && e.data?.tipo === "EXTENSION_READY") {
+    _extDisponible = true;
+  }
+});
+
+function extDisponible() { return _extDisponible; }
+
+// Enviar petición a la extensión y esperar respuesta
+function extPeticion(tipo, params = {}, timeoutMs = 60000) {
+  return new Promise((resolve, reject) => {
+    const id = Math.random().toString(36).slice(2);
+    const timer = setTimeout(() => {
+      window.removeEventListener("message", handler);
+      reject(new Error("La extensión no respondió a tiempo"));
+    }, timeoutMs);
+    const handler = (e) => {
+      if (e.source === window && e.data?.source === "DIAN_EXT" && e.data?.id === id) {
+        clearTimeout(timer);
+        window.removeEventListener("message", handler);
+        if (e.data.ok) resolve(e.data);
+        else reject(new Error(e.data.error || "Error de la extensión"));
+      }
+    };
+    window.addEventListener("message", handler);
+    window.postMessage({ source: "CONTAIA_APP", id, tipo, ...params }, "*");
+  });
+}
+
 const fmt      = n => `$${Number(n || 0).toLocaleString("es-CO")}`;
 const fmtFecha = f => { if (!f) return ""; const [y,m,d] = f.split("-"); return d ? `${d}/${m}/${y}` : f; };
 const primerDiaMes = () => { const h = new Date(); return `${h.getFullYear()}-${String(h.getMonth()+1).padStart(2,"0")}-01`; };
