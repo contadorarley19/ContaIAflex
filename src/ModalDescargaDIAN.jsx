@@ -224,8 +224,8 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
           if (res.tipo === "click") {
             clicksOk++;
             addLog(`✓ ${f?.emisor || trackId.slice(0,8)} — descargado al PC`, "ok");
-            // pausa entre clics para no saturar el portal y dejar regenerar el captcha
-            await new Promise(s => setTimeout(s, 1200));
+            // pausa entre clics para que el portal procese y el captcha regenere
+            await new Promise(s => setTimeout(s, 3000));
             setProgreso({ actual: clicksOk, total: trackIds.length });
             continue;
           }
