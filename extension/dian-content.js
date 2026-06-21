@@ -1,8 +1,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // dian-content.js — Se inyecta EN la página del portal DIAN
 //
-// El token Turnstile (captcha) es de UN SOLO USO. Después de cada descarga
-// hay que esperar a que Cloudflare regenere uno nuevo en el input oculto.
+// Estrategia optimizada para el Turnstile de un solo uso:
+//   1. Capturar el token actual y descargar inmediatamente
+//   2. Apenas se usa, forzar reset() del widget para regenerar
+//   3. Polling rápido (cada 200ms) para detectar el nuevo token apenas aparece
+//   4. Observer del input para reaccionar al instante cuando cambia el valor
 // ─────────────────────────────────────────────────────────────────────────────
 
 function obtenerTurnstileValue() {
@@ -10,7 +13,6 @@ function obtenerTurnstileValue() {
   return input ? input.value : "";
 }
 
-// Forzar la regeneración del token Turnstile
 function resetTurnstile() {
   try {
     if (window.turnstile && typeof window.turnstile.reset === "function") {
@@ -21,28 +23,55 @@ function resetTurnstile() {
   return false;
 }
 
-// Esperar a que haya un token Turnstile NUEVO (distinto del anterior)
-async function esperarNuevoToken(tokenAnterior, maxEsperaMs = 15000) {
-  const inicio = Date.now();
-  // Intentar resetear para forzar nuevo token
-  resetTurnstile();
-  while (Date.now() - inicio < maxEsperaMs) {
+// Esperar a que el input tenga un token NUEVO usando MutationObserver (instantáneo)
+function esperarNuevoToken(tokenAnterior, maxEsperaMs = 12000) {
+  return new Promise((resolve) => {
+    const input = document.querySelector('input[name="cf-turnstile-response"]');
+
+    // Si ya hay uno nuevo, devolverlo de inmediato
     const actual = obtenerTurnstileValue();
-    if (actual && actual !== tokenAnterior) {
-      return actual;
+    if (actual && actual !== tokenAnterior) return resolve(actual);
+
+    let resuelto = false;
+    const finalizar = (val) => {
+      if (resuelto) return;
+      resuelto = true;
+      if (observer) observer.disconnect();
+      clearInterval(poller);
+      clearTimeout(timeout);
+      resolve(val);
+    };
+
+    // Observer: reacciona apenas el input cambia de valor
+    let observer = null;
+    if (input) {
+      observer = new MutationObserver(() => {
+        const v = obtenerTurnstileValue();
+        if (v && v !== tokenAnterior) finalizar(v);
+      });
+      observer.observe(input, { attributes: true, attributeFilter: ["value"] });
     }
-    await new Promise(r => setTimeout(r, 500));
-  }
-  // Si no se regeneró, devolver el que haya (puede que el mismo siga válido)
-  return obtenerTurnstileValue();
+
+    // Poller de respaldo cada 200ms (algunos cambios de value no disparan mutación)
+    const poller = setInterval(() => {
+      const v = obtenerTurnstileValue();
+      if (v && v !== tokenAnterior) finalizar(v);
+    }, 200);
+
+    // Timeout: si no se regeneró, devolver lo que haya
+    const timeout = setTimeout(() => finalizar(obtenerTurnstileValue()), maxEsperaMs);
+
+    // Forzar regeneración
+    resetTurnstile();
+  });
 }
 
 let _ultimoToken = "";
 
 async function descargarXmlConCaptcha(trackId) {
-  // Obtener un token nuevo (distinto al usado en la descarga anterior)
   let turnstileValue;
   if (_ultimoToken) {
+    // Esperar token nuevo (rápido gracias al observer)
     turnstileValue = await esperarNuevoToken(_ultimoToken);
   } else {
     turnstileValue = obtenerTurnstileValue();
@@ -68,10 +97,15 @@ async function descargarXmlConCaptcha(trackId) {
   if (bytes.length < 4 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) {
     const texto = new TextDecoder().decode(bytes.slice(0, 200));
     if (texto.includes("<?xml") || texto.includes("<Invoice") || texto.includes("<AttachedDocument")) {
+      // Inmediatamente forzar regeneración para la siguiente
+      resetTurnstile();
       return { tipo: "xml", contenido: new TextDecoder().decode(bytes) };
     }
     throw new Error("Captcha expirado o inválido");
   }
+
+  // Forzar regeneración del token para la siguiente descarga
+  resetTurnstile();
 
   let binary = "";
   const chunk = 8192;
@@ -103,4 +137,4 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return true;
 });
 
-console.log("[ContaIA DIAN] Listo en portal DIAN. Captcha:", !!obtenerTurnstileValue());
+console.log("[ContaIA DIAN] Listo en portal DIAN. Captcha inicial:", !!obtenerTurnstileValue());
