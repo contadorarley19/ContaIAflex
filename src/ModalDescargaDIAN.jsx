@@ -203,14 +203,37 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
     // ─── Si la extensión está disponible, descargar con ella (bypass Cloudflare) ───
     if (extDisponible()) {
       addLog(`Descargando ${trackIds.length} XMLs con la extensión...`, "info");
+      // Cargar JSZip para extraer XML de los ZIPs
+      if (!window.JSZip) {
+        await new Promise((resolve, reject) => {
+          const s = document.createElement("script");
+          s.src = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
+          s.onload = resolve; s.onerror = reject;
+          document.head.appendChild(s);
+        });
+      }
       const xmlsOk = [];
       for (let i = 0; i < trackIds.length; i++) {
         const trackId = trackIds[i];
         const f = facturas.find(x => x.trackId === trackId);
         try {
-          const res = await extPeticion("DESCARGAR_XML", { trackId });
+          const res = await extPeticion("DESCARGAR_ZIP", { trackId });
+          let xmlContenido = "";
+          if (res.tipo === "xml") {
+            xmlContenido = res.contenido;
+          } else {
+            // Es ZIP en base64 — extraer XML con JSZip
+            const binary = atob(res.contenido);
+            const bytes = new Uint8Array(binary.length);
+            for (let j = 0; j < binary.length; j++) bytes[j] = binary.charCodeAt(j);
+            const zip = await window.JSZip.loadAsync(bytes);
+            // Buscar el archivo .xml dentro del ZIP
+            const xmlFile = Object.values(zip.files).find(file => file.name.toLowerCase().endsWith(".xml"));
+            if (!xmlFile) throw new Error("Sin XML en el ZIP");
+            xmlContenido = await xmlFile.async("string");
+          }
           const nombre = `${(f?.emisor || "factura").replace(/[^a-zA-Z0-9]/g,"_")}_${trackId.slice(0,8)}.xml`;
-          xmlsOk.push({ nombre, contenido: res.xml, trackId, factura: f });
+          xmlsOk.push({ nombre, contenido: xmlContenido, trackId, factura: f });
           addLog(`✓ ${f?.emisor || trackId.slice(0,8)} — $${(f?.valor||0).toLocaleString("es-CO")}`, "ok");
         } catch(e) {
           addLog(`⚠ ${f?.emisor || trackId.slice(0,8)}: ${e.message}`, "warn");
