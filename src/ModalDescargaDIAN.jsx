@@ -109,6 +109,15 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
     try {
       let ckFinal = "", dhFinal = "";
 
+      // ─── Si la extensión está instalada, NO usar el proxy — ir directo a listar ───
+      if (extDisponible()) {
+        addLog("✓ Extensión detectada — usando tu sesión del navegador", "ok");
+        setPaso("lista");
+        await _listarFacturas("", "");
+        setCargando(false);
+        return;
+      }
+
       if (modoAuth === "cookies") {
         // Modo cookies manual — usar directamente sin llamar a auth
         if (!cookiesManual.trim()) { setError("Pega las cookies del portal DIAN"); setCargando(false); return; }
