@@ -202,21 +202,16 @@
   // Descargar: primero intenta con NUESTRO widget (token fresco controlado);
   // si falla, cae al clic en el botón nativo del portal.
   async function descargar(trackId, identifier) {
-    // Intento 1: fetch con token de nuestro widget propio (el trackId real para el endpoint)
-    const idParaFetch = identifier || trackId;
-    try {
-      const r = await descargarConTokenPropio(idParaFetch);
-      if (r.tipo) return r;
-    } catch (e) { /* sigue al respaldo */ }
-
-    // Respaldo: clic en el botón nativo del portal
+    // Con el captcha recién resuelto (tras recarga), el clic en el botón nativo
+    // del portal dispara la descarga con el token válido. Es el flujo del portal.
     const ids = [identifier, trackId].filter(Boolean);
     const btn = buscarBotonDescarga(ids);
     if (!btn) {
-      throw new Error("No se pudo descargar: ni el token propio ni el botón nativo funcionaron.");
+      throw new Error("No encontré el botón de descarga de esta factura en la lista del portal.");
     }
     btn.click();
-    await new Promise(s => setTimeout(s, 1500));
+    // Dar tiempo a que el portal procese el captcha y dispare la descarga
+    await new Promise(s => setTimeout(s, 2000));
     return { tipo: "click", ok: true };
   }
 
