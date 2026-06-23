@@ -202,16 +202,54 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
 
     // ─── Si la extensión está disponible, descargar con ella (bypass Cloudflare) ───
     if (extDisponible()) {
-      addLog(`Descargando ${trackIds.length} XMLs con la extensión...`, "info");
-      // Cargar JSZip para extraer XML de los ZIPs
-      if (!window.JSZip) {
-        await new Promise((resolve, reject) => {
-          const s = document.createElement("script");
-          s.src = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
-          s.onload = resolve; s.onerror = reject;
-          document.head.appendChild(s);
+      addLog(`Descargando ${trackIds.length} facturas (con recarga automática entre cada una)...`, "info");
+      addLog(`Esto toma ~6 seg por factura. No cierres la pestaña del portal.`, "info");
+
+      // Construir lista de facturas con su identifier para el lote
+      const listaLote = trackIds.map(trackId => {
+        const f = facturas.find(x => x.trackId === trackId);
+        return { trackId, identifier: f?.identifier, emisor: f?.emisor };
+      });
+
+      // Escuchar progreso del background durante el ciclo
+      const onProg = (ev) => {
+        if (ev?.data?.tipo === "PROGRESO_LOTE_APP") {
+          setProgreso({ actual: ev.data.actual, total: ev.data.total });
+        }
+      };
+      window.addEventListener("message", onProg);
+
+      try {
+        // UNA sola llamada: el background hace descargar→recargar→esperar→siguiente
+        const res = await extPeticion("DESCARGAR_LOTE", { facturas: listaLote }, 600000);
+        const okCount = (res.resultados || []).length;
+        const failCount = (res.fallidas || []).length;
+
+        (res.resultados || []).forEach(r => {
+          addLog(`✓ ${r.emisor || r.trackId?.slice(0,8)} — descargada al PC`, "ok");
         });
+        (res.fallidas || []).forEach(r => {
+          addLog(`⚠ ${r.emisor || r.trackId?.slice(0,8)}: ${r.error}`, "warn");
+        });
+
+        addLog(`────────────────────`, "info");
+        addLog(`✓ ${okCount}/${trackIds.length} facturas descargadas a tu carpeta de Descargas`, "ok");
+        if (failCount > 0) addLog(`⚠ ${failCount} no se pudieron descargar`, "warn");
+
+        setProgreso({ actual: okCount, total: trackIds.length });
+      } catch(e) {
+        addLog(`✗ Error: ${e.message}`, "error");
+        setError(e.message);
+      } finally {
+        window.removeEventListener("message", onProg);
       }
+
+      setCargando(false);
+      setPaso("listo");
+      return;
+    }
+
+    if (false) {  // bloque viejo individual deshabilitado
       const xmlsOk = [];
       let clicksOk = 0;
       for (let i = 0; i < trackIds.length; i++) {
