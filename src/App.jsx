@@ -409,9 +409,17 @@ function useSupabase() {
   return { empresas, empresaActual, setEmpresaActual, pucCuentas, autorretenedores, cargando };
 }
 
+// Quita campos pesados (XML crudo, base64) antes de guardar en localStorage,
+// para no exceder la cuota del navegador al cargar muchas facturas.
+function aligerar(f) {
+  if (!f || typeof f !== "object") return f;
+  const { xmlOriginal, _xmlOriginal, pdfBase64, _pdfBase64, rawXml, ...resto } = f;
+  return resto;
+}
+
 function useFacturas() {
   const [facturas, setFacturasRaw] = useState(() => { try { const raw = localStorage.getItem("contaia_facturas_v4"); if (!raw) return []; const parsed = JSON.parse(raw); const hoy = new Date().toISOString().slice(0, 10); return parsed.filter(f => (f.fechaCarga || "").startsWith(hoy)); } catch { return []; } });
-  const setFacturas = (upd) => { setFacturasRaw(prev => { const next = typeof upd === "function" ? upd(prev) : upd; try { localStorage.setItem("contaia_facturas_v4", JSON.stringify(next)); } catch { } return next; }); };
+  const setFacturas = (upd) => { setFacturasRaw(prev => { const next = typeof upd === "function" ? upd(prev) : upd; try { localStorage.setItem("contaia_facturas_v4", JSON.stringify(next.map(aligerar))); } catch { try { localStorage.setItem("contaia_facturas_v4", JSON.stringify(next.map(f => ({ ...aligerar(f), asiento: null })))); } catch {} } return next; }); };
   const limpiar = () => { setFacturasRaw([]); localStorage.removeItem("contaia_facturas_v4"); };
   return { facturas, setFacturas, limpiar };
 }
@@ -726,9 +734,9 @@ export default function App() {
   const [tabVista, setTabVista] = useState("porAprobar");
   const [modalAuditoria, setModalAuditoria] = useState(false);
   const [subidas, setSubidasRaw] = useState(() => { try { return JSON.parse(localStorage.getItem("cf_ia_subidas") || "[]"); } catch(e) { return []; } });
-  const guardarSubidas = (arr) => { setSubidasRaw(arr); localStorage.setItem("cf_ia_subidas", JSON.stringify(arr)); };
+  const guardarSubidas = (arr) => { setSubidasRaw(arr); try { localStorage.setItem("cf_ia_subidas", JSON.stringify(arr.map(aligerar))); } catch {} };
   const [aprobadasAcum, setAprobadasAcumRaw] = useState(() => { try { return JSON.parse(localStorage.getItem("cf_ia_aprobadas") || "[]"); } catch(e) { return []; } });
-  const guardarAprobadasAcum = (arr) => { setAprobadasAcumRaw(arr); localStorage.setItem("cf_ia_aprobadas", JSON.stringify(arr)); };
+  const guardarAprobadasAcum = (arr) => { setAprobadasAcumRaw(arr); try { localStorage.setItem("cf_ia_aprobadas", JSON.stringify(arr.map(aligerar))); } catch {} };
   const [progreso, setProgreso] = useState({ actual: 0, total: 0 });
   const [modalExport, setModalExport] = useState(false);
   const [testAbierto, setTestAbierto] = useState(false);
@@ -789,9 +797,9 @@ export default function App() {
   };
 
   const upd = (id, k, v) => {
-    if (k === "_reprocesar_xml") { const fac = facturas.find(f => f.id === id); if (fac && fac.xmlOriginal) { upd(fac.id, "_eliminar", true); setTimeout(() => { const file = new File([fac.xmlOriginal], fac.archivo || "factura.xml", { type: "text/xml" }); setModal({ archivos: [file] }); }, 100); } return; } if (k === "_redescargar_dian") { const fac = facturas.find(f => f.id === id); if (fac?.trackId) { setModalDIAN(true); setTimeout(() => { window._redescargarTrackId = { trackId: fac.trackId, cookies: window._dianCookies }; }, 100); } return; } if (k === "_eliminar" || k === "_reprocesar") { setFacturas(p => p.filter(f => f.id !== id)); setAprobadasAcumRaw(p => { const n=p.filter(f=>f.id!==id); localStorage.setItem("cf_ia_aprobadas",JSON.stringify(n)); return n; }); return; }
+    if (k === "_reprocesar_xml") { const fac = facturas.find(f => f.id === id); if (fac && fac.xmlOriginal) { upd(fac.id, "_eliminar", true); setTimeout(() => { const file = new File([fac.xmlOriginal], fac.archivo || "factura.xml", { type: "text/xml" }); setModal({ archivos: [file] }); }, 100); } return; } if (k === "_redescargar_dian") { const fac = facturas.find(f => f.id === id); if (fac?.trackId) { setModalDIAN(true); setTimeout(() => { window._redescargarTrackId = { trackId: fac.trackId, cookies: window._dianCookies }; }, 100); } return; } if (k === "_eliminar" || k === "_reprocesar") { setFacturas(p => p.filter(f => f.id !== id)); setAprobadasAcumRaw(p => { const n=p.filter(f=>f.id!==id); try{localStorage.setItem("cf_ia_aprobadas",JSON.stringify(n.map(aligerar)));}catch{} return n; }); return; }
     setFacturas(prev => prev.map(f => f.id === id ? { ...f, [k]: v } : f));
-    if (k === "aprobado") { setAprobadasAcumRaw(prev2 => { let nuevas; if (v === true) { const sin = prev2.filter(x => x.id !== id); nuevas = [...sin, { ...facturas.find(f=>f.id===id)||{}, [k]: v }]; } else { nuevas = prev2.filter(x => x.id !== id); } localStorage.setItem("cf_ia_aprobadas", JSON.stringify(nuevas)); return nuevas; }); }
+    if (k === "aprobado") { setAprobadasAcumRaw(prev2 => { let nuevas; if (v === true) { const sin = prev2.filter(x => x.id !== id); nuevas = [...sin, { ...facturas.find(f=>f.id===id)||{}, [k]: v }]; } else { nuevas = prev2.filter(x => x.id !== id); } try { localStorage.setItem("cf_ia_aprobadas", JSON.stringify(nuevas.map(aligerar))); } catch {} return nuevas; }); }
   };
 
   const aprobadas = facturas.filter(f => f.aprobado && !f.error).sort((a, b) => (a.fecha || "").localeCompare(b.fecha || ""));
