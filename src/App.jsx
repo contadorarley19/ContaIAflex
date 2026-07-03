@@ -394,12 +394,12 @@ function FacturaCard({ f, idx, docNum, onUpdate, onAprender }) {
     <div id={`factura-${f.id}`} style={{ background: "#1a2035", border: `1px solid ${f.aprobado ? "#166534" : cuadra ? "#232840" : "#7c3700"}`, borderRadius: 12, overflow: "hidden" }}>
       <div style={{ background: "#131c2e", borderBottom: "1px solid rgba(255,255,255,0.08)", padding: "8px 16px", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <span style={{ fontSize: 11, color: "#475569", fontWeight: 600 }}>#{String(idx + 1).padStart(2, "0")}</span>
-        {docNum && <span style={{ background: "#1e2a3a", color: "#60a5fa", padding: "2px 9px", borderRadius: 4, fontFamily: "monospace", fontSize: 11, fontWeight: 700 }}>DocNum:{docNum}</span>}
+        {docNum && <span style={{ background: "rgba(79,142,247,.12)", color: "#4f8ef7", padding: "3px 9px", borderRadius: 6, fontFamily: "monospace", fontSize: 11, fontWeight: 700 }}>{docNum}</span>}
         <span style={{ background: f.tratamiento === "inventario" ? "#1e3a5f" : "#2d1b4e", color: f.tratamiento === "inventario" ? "#60a5fa" : "#c084fc", border: "1px solid #44", borderRadius: 20, padding: "2px 9px", fontSize: 11, fontWeight: 600 }}>{f.tratamiento === "inventario" ? "📦 Inventario" : "📉 Costo/Gasto"}</span>
         {f.esAutorretenedor && <span style={{ background: "#2d1a00", color: "#fb923c", border: "1px solid #7c370066", borderRadius: 20, padding: "2px 9px", fontSize: 11, fontWeight: 600 }}>🔒 Autorretenedor</span>}
         {hayAdv && <span style={{ background: "#2d2000", color: "#fbbf24", borderRadius: 20, padding: "2px 9px", fontSize: 11, fontWeight: 600 }}>⚠ Verificar cuenta</span>}
         {!cuadra && <span style={{ background: "#3b1f1f", color: "#f87171", borderRadius: 20, padding: "2px 9px", fontSize: 11, fontWeight: 600 }}>⚡ Descuadrado</span>}
-        {f.aprobado && <span style={{ background: "#14532d", color: "#86efac", borderRadius: 20, padding: "2px 9px", fontSize: 11, fontWeight: 600 }}>✓ Aprobado</span>}
+        {f.aprobado && <span style={{ background: "rgba(74,222,128,.1)", color: "#4ade80", border: "1px solid rgba(74,222,128,.25)", borderRadius: 20, padding: "3px 10px", fontSize: 10, fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.03em" }}>● Aprobado</span>}
         {f.enviado && <span style={{ background: "#2d1b4e", color: "#c084fc", borderRadius: 20, padding: "2px 9px", fontSize: 11, fontWeight: 600 }}>🚀 Enviada</span>}
         <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
           <button onClick={() => setExpandido(e => !e)} style={{ background: "transparent", border: "1px solid #2d3352", color: "#94a3b8", borderRadius: 6, padding: "3px 10px", cursor: "pointer", fontSize: 11 }}>{expandido ? "▲" : "▼ Asiento"}</button>
