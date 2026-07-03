@@ -522,10 +522,10 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
   // ─────────────────────────────────────────────────────────────────────────
   return (
     <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.92)", zIndex:4000, display:"flex", alignItems:"center", justifyContent:"center", padding:16 }}>
-      <div style={{ background:"#0f1117", border:"1px solid #1e2a40", borderRadius:16, width:"100%", maxWidth:860, maxHeight:"92vh", display:"flex", flexDirection:"column", overflow:"hidden", boxShadow:"0 24px 80px rgba(0,0,0,.6)" }}>
+      <div style={{ background:"#0f1f3d", border:"1px solid #1e2a40", borderRadius:16, width:"100%", maxWidth:860, maxHeight:"92vh", display:"flex", flexDirection:"column", overflow:"hidden", boxShadow:"0 24px 80px rgba(0,0,0,.6)" }}>
 
         {/* HEADER */}
-        <div style={{ background:"#0d101a", borderBottom:"1px solid #1e2235", padding:"14px 20px", display:"flex", alignItems:"center", gap:12, flexShrink:0 }}>
+        <div style={{ background:"#0d101a", borderBottom:"1px solid rgba(255,255,255,0.08)", padding:"14px 20px", display:"flex", alignItems:"center", gap:12, flexShrink:0 }}>
           <div style={{ width:36, height:36, background:"linear-gradient(135deg,#0066ff,#00e5a0)", borderRadius:9, display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, flexShrink:0 }}>📥</div>
           <div>
             <div style={{ fontFamily:"sans-serif", fontWeight:700, fontSize:15, color:"#fff" }}>Descarga automática DIAN</div>
@@ -541,16 +541,16 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
               const pasado = actual > este;
               return (
                 <div key={p.id} style={{ display:"flex", alignItems:"center", gap:6 }}>
-                  <div style={{ width:24, height:24, borderRadius:"50%", background: paso===p.id ? "linear-gradient(135deg,#0066ff,#00e5a0)" : pasado ? "rgba(0,229,160,.15)" : "#1e2235", border: paso===p.id ? "none" : "1px solid #2d3352", display:"flex", alignItems:"center", justifyContent:"center", fontSize:10, fontWeight:700, color: paso===p.id ? "#000" : "#475569" }}>
+                  <div style={{ width:24, height:24, borderRadius:"50%", background: paso===p.id ? "linear-gradient(135deg,#0066ff,#00e5a0)" : pasado ? "rgba(0,229,160,.15)" : "rgba(255,255,255,0.08)", border: paso===p.id ? "none" : "1px solid rgba(255,255,255,0.1)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:10, fontWeight:700, color: paso===p.id ? "#000" : "#475569" }}>
                     {pasado ? "✓" : i+1}
                   </div>
                   <span style={{ fontSize:10, color: paso===p.id ? "#00e5a0" : "#475569" }}>{p.label}</span>
-                  {i < arr.length-1 && <span style={{ color:"#2d3352", fontSize:12 }}>→</span>}
+                  {i < arr.length-1 && <span style={{ color:"rgba(255,255,255,0.1)", fontSize:12 }}>→</span>}
                 </div>
               );
             })}
           </div>
-          <button onClick={onClose} style={{ background:"transparent", border:"1px solid #2d3352", color:"#64748b", borderRadius:6, padding:"4px 10px", cursor:"pointer", fontSize:12, marginLeft:8 }}>✕</button>
+          <button onClick={onClose} style={{ background:"transparent", border:"1px solid rgba(255,255,255,0.1)", color:"#64748b", borderRadius:6, padding:"4px 10px", cursor:"pointer", fontSize:12, marginLeft:8 }}>✕</button>
         </div>
 
         {/* BODY */}
@@ -566,7 +566,7 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
           {paso === "token" && (
             <div style={{ display:"flex", flexDirection:"column", gap:16 }}>
               {/* Tabs: Token URL vs Cookies manuales */}
-              <div style={{ display:"flex", gap:0, borderBottom:"1px solid #1e2235" }}>
+              <div style={{ display:"flex", gap:0, borderBottom:"1px solid rgba(255,255,255,0.08)" }}>
                 {[["url","🔗 Token URL"],["cookies","🍪 Pegar Cookies"]].map(([id,lbl])=>(
                   <button key={id} onClick={()=>setModoAuth(id)}
                     style={{ padding:"8px 16px", border:"none", background:"transparent", cursor:"pointer",
@@ -586,7 +586,7 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
                 <div>
                   <div style={{ fontSize:11, color:"#64748b", textTransform:"uppercase", letterSpacing:".08em", marginBottom:6, fontWeight:600 }}>URL del token DIAN</div>
                   <textarea value={tokenUrl} onChange={e=>{setTokenUrl(e.target.value);setError("");}} placeholder="https://catalogo-vpfe.dian.gov.co/User/AuthToken?pk=...&token=..." rows={3}
-                    style={{ width:"100%", background:"#0d101a", border:`1px solid ${tokenUrl?"#2d5a3d":"#2d3352"}`, color:"#e2e8f0", borderRadius:8, padding:"10px 14px", fontFamily:"monospace", fontSize:11, outline:"none", resize:"vertical", lineHeight:1.6 }} />
+                    style={{ width:"100%", background:"#0d101a", border:`1px solid ${tokenUrl?"#2d5a3d":"rgba(255,255,255,0.1)"}`, color:"#e8eaf0", borderRadius:8, padding:"10px 14px", fontFamily:"monospace", fontSize:11, outline:"none", resize:"vertical", lineHeight:1.6 }} />
                 </div>
               </>}
 
@@ -596,14 +596,14 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
                   1. Abra <strong>catalogo-vpfe.dian.gov.co</strong> en Chrome y entre normalmente<br/>
                   2. Presione <strong>F12</strong> → Application → Cookies → catalogo-vpfe.dian.gov.co<br/>
                   3. Abra la consola (F12 → Console) y ejecute:<br/>
-                  <code style={{background:"#1e2235",padding:"4px 8px",borderRadius:4,display:"block",marginTop:6,fontSize:11}}>copy(document.cookie)</code>
+                  <code style={{background:"rgba(255,255,255,0.08)",padding:"4px 8px",borderRadius:4,display:"block",marginTop:6,fontSize:11}}>copy(document.cookie)</code>
                   4. Pegue el resultado aquí abajo
                 </div>
                 <div>
                   <div style={{ fontSize:11, color:"#64748b", textTransform:"uppercase", letterSpacing:".08em", marginBottom:6, fontWeight:600 }}>Cookies del portal DIAN</div>
                   <textarea value={cookiesManual} onChange={e=>{setCookiesManual(e.target.value);setError("");}}
                     placeholder="ASP.NET_SessionId=abc123; afd_azwaf_jsclearance=eyJ...; __RequestVerificationToken=xyz..." rows={4}
-                    style={{ width:"100%", background:"#0d101a", border:`1px solid ${cookiesManual?"#2d5a3d":"#2d3352"}`, color:"#e2e8f0", borderRadius:8, padding:"10px 14px", fontFamily:"monospace", fontSize:10, outline:"none", resize:"vertical", lineHeight:1.6 }} />
+                    style={{ width:"100%", background:"#0d101a", border:`1px solid ${cookiesManual?"#2d5a3d":"rgba(255,255,255,0.1)"}`, color:"#e8eaf0", borderRadius:8, padding:"10px 14px", fontFamily:"monospace", fontSize:10, outline:"none", resize:"vertical", lineHeight:1.6 }} />
                 </div>
               </>}
 
@@ -612,7 +612,7 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
                   <div key={label}>
                     <div style={{ fontSize:11, color:"#64748b", textTransform:"uppercase", letterSpacing:".07em", marginBottom:5, fontWeight:600 }}>{label}</div>
                     <input type="date" value={val} onChange={e=>set(e.target.value)}
-                      style={{ width:"100%", background:"#0d101a", border:"1px solid #2d3352", color:"#e2e8f0", borderRadius:6, padding:"8px 10px", fontSize:12, outline:"none", cursor:"pointer" }} />
+                      style={{ width:"100%", background:"#0d101a", border:"1px solid rgba(255,255,255,0.1)", color:"#e8eaf0", borderRadius:6, padding:"8px 10px", fontSize:12, outline:"none", cursor:"pointer" }} />
                   </div>
                 ))}
               </div>
@@ -623,7 +623,7 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
           {(paso==="lista"||paso==="descarga"||paso==="listo") && facturas.length > 0 && (
             <div>
               <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:10, flexWrap:"wrap" }}>
-                <button onClick={toggleTodas} style={{ background:"transparent", border:"1px solid #2d3352", color:"#94a3b8", borderRadius:5, padding:"4px 10px", cursor:"pointer", fontSize:11 }}>
+                <button onClick={toggleTodas} style={{ background:"transparent", border:"1px solid rgba(255,255,255,0.1)", color:"#94a3b8", borderRadius:5, padding:"4px 10px", cursor:"pointer", fontSize:11 }}>
                   {seleccion.size===facturas.length ? "Deseleccionar" : "Seleccionar"} todas
                 </button>
                 <span style={{ fontSize:11, color:"#64748b" }}>
@@ -637,13 +637,13 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
                   </button>
                 )}
               </div>
-              <div style={{ background:"#0d101a", border:"1px solid #1e2235", borderRadius:8, overflow:"hidden", maxHeight:320, overflowY:"auto" }}>
+              <div style={{ background:"#0d101a", border:"1px solid rgba(255,255,255,0.08)", borderRadius:8, overflow:"hidden", maxHeight:320, overflowY:"auto" }}>
                 <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11 }}>
                   <thead>
-                    <tr style={{ background:"#131620", position:"sticky", top:0 }}>
+                    <tr style={{ background:"#131c2e", position:"sticky", top:0 }}>
                       <th style={{ width:32, padding:"7px 10px" }}></th>
                       {["Fecha","Proveedor","NIT","N° Factura","Valor","Estado"].map(h => (
-                        <th key={h} style={{ padding:"7px 10px", textAlign:"left", fontSize:10, fontWeight:600, color:"#475569", textTransform:"uppercase", letterSpacing:".05em", borderBottom:"1px solid #1e2235" }}>{h}</th>
+                        <th key={h} style={{ padding:"7px 10px", textAlign:"left", fontSize:10, fontWeight:600, color:"#475569", textTransform:"uppercase", letterSpacing:".05em", borderBottom:"1px solid rgba(255,255,255,0.08)" }}>{h}</th>
                       ))}
                     </tr>
                   </thead>
@@ -658,7 +658,7 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
                             <input type="checkbox" checked={esSel} onChange={()=>toggleFila(f.trackId)} onClick={e=>e.stopPropagation()} style={{ cursor:"pointer", accentColor:"#00e5a0" }} />
                           </td>
                           <td style={{ padding:"6px 10px", color:"#94a3b8", whiteSpace:"nowrap" }}>{fmtFecha(f.fecha)}</td>
-                          <td style={{ padding:"6px 10px", color:"#e2e8f0", maxWidth:180, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{f.emisor||"—"}</td>
+                          <td style={{ padding:"6px 10px", color:"#e8eaf0", maxWidth:180, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{f.emisor||"—"}</td>
                           <td style={{ padding:"6px 10px", fontFamily:"monospace", color:"#60a5fa" }}>{f.nitEmisor||"—"}</td>
                           <td style={{ padding:"6px 10px", fontFamily:"monospace", color:"#64748b" }}>{f.prefijo?`${f.prefijo}${f.nroDocumento}`:"—"}</td>
                           <td style={{ padding:"6px 10px", color:"#4ade80", fontWeight:600, textAlign:"right", whiteSpace:"nowrap" }}>{f.valor?fmt(f.valor):"—"}</td>
@@ -690,7 +690,7 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
                 <span>Descargando XMLs...</span>
                 <span style={{ color:"#00e5a0", fontWeight:700 }}>{progreso.actual}/{progreso.total}</span>
               </div>
-              <div style={{ height:4, background:"#1e2235", borderRadius:2, overflow:"hidden", marginBottom:12 }}>
+              <div style={{ height:4, background:"rgba(255,255,255,0.08)", borderRadius:2, overflow:"hidden", marginBottom:12 }}>
                 <div style={{ height:"100%", width:`${progreso.total?(progreso.actual/progreso.total)*100:0}%`, background:"linear-gradient(90deg,#0066ff,#00e5a0)", borderRadius:2, transition:"width .4s ease" }} />
               </div>
             </div>
@@ -714,7 +714,7 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
 
           {/* LOG */}
           {logs.length > 0 && (
-            <div ref={logRef} style={{ background:"#060810", border:"1px solid #1e2235", borderRadius:8, padding:"10px 14px", maxHeight:140, overflowY:"auto", fontSize:10, lineHeight:1.9, fontFamily:"monospace" }}>
+            <div ref={logRef} style={{ background:"#0a1226", border:"1px solid rgba(255,255,255,0.08)", borderRadius:8, padding:"10px 14px", maxHeight:140, overflowY:"auto", fontSize:10, lineHeight:1.9, fontFamily:"monospace" }}>
               {logs.map((l,i) => (
                 <div key={i} style={{ display:"flex", gap:10 }}>
                   <span style={{ color:"#2d3f6e", flexShrink:0 }}>{l.time}</span>
@@ -726,32 +726,32 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
         </div>
 
         {/* FOOTER */}
-        <div style={{ borderTop:"1px solid #1e2235", padding:"14px 20px", display:"flex", gap:10, justifyContent:"flex-end", flexShrink:0, background:"#0d101a" }}>
-          <button onClick={onClose} style={{ background:"transparent", border:"1px solid #2d3352", color:"#94a3b8", borderRadius:6, padding:"9px 18px", cursor:"pointer", fontSize:13, fontWeight:600 }}>Cancelar</button>
+        <div style={{ borderTop:"1px solid rgba(255,255,255,0.08)", padding:"14px 20px", display:"flex", gap:10, justifyContent:"flex-end", flexShrink:0, background:"#0d101a" }}>
+          <button onClick={onClose} style={{ background:"transparent", border:"1px solid rgba(255,255,255,0.1)", color:"#94a3b8", borderRadius:6, padding:"9px 18px", cursor:"pointer", fontSize:13, fontWeight:600 }}>Cancelar</button>
 
           {paso==="token" && (
             <button onClick={autenticar} disabled={cargando||(modoAuth==="url"?!tokenUrl:!cookiesManual)}
-              style={{ background:(cargando||(modoAuth==="url"?!tokenUrl:!cookiesManual))?"#1e2235":"linear-gradient(135deg,#0066ff,#0099ff)", color:(cargando||(modoAuth==="url"?!tokenUrl:!cookiesManual))?"#475569":"#fff", border:"none", borderRadius:6, padding:"9px 24px", cursor:"pointer", fontSize:13, fontWeight:700, display:"flex", alignItems:"center", gap:8 }}>
+              style={{ background:(cargando||(modoAuth==="url"?!tokenUrl:!cookiesManual))?"rgba(255,255,255,0.08)":"linear-gradient(135deg,#0066ff,#0099ff)", color:(cargando||(modoAuth==="url"?!tokenUrl:!cookiesManual))?"#475569":"#fff", border:"none", borderRadius:6, padding:"9px 24px", cursor:"pointer", fontSize:13, fontWeight:700, display:"flex", alignItems:"center", gap:8 }}>
               {cargando ? <><span style={{animation:"spin 1s linear infinite",display:"inline-block"}}>⚙</span> Conectando...</> : modoAuth==="cookies" ? "🍪 Usar cookies →" : "🔐 Autenticar con DIAN →"}
             </button>
           )}
 
           {paso==="lista" && facturas.length===0 && (
             <button onClick={listarFacturas} disabled={cargando}
-              style={{ background:cargando?"#1e2235":"linear-gradient(135deg,#0066ff,#00e5a0)", color:cargando?"#475569":"#000", border:"none", borderRadius:6, padding:"9px 24px", cursor:cargando?"not-allowed":"pointer", fontSize:13, fontWeight:700 }}>
+              style={{ background:cargando?"rgba(255,255,255,0.08)":"linear-gradient(135deg,#0066ff,#00e5a0)", color:cargando?"#475569":"#000", border:"none", borderRadius:6, padding:"9px 24px", cursor:cargando?"not-allowed":"pointer", fontSize:13, fontWeight:700 }}>
               {cargando?"Consultando...":"🔍 Consultar facturas →"}
             </button>
           )}
 
           {paso==="lista" && facturas.length>0 && (
             <button onClick={descargar} disabled={cargando||seleccion.size===0}
-              style={{ background:cargando||seleccion.size===0?"#1e2235":"linear-gradient(135deg,#00cc88,#00e5a0)", color:cargando||seleccion.size===0?"#475569":"#000", border:"none", borderRadius:6, padding:"9px 24px", cursor:cargando||seleccion.size===0?"not-allowed":"pointer", fontSize:13, fontWeight:700, display:"flex", alignItems:"center", gap:8 }}>
+              style={{ background:cargando||seleccion.size===0?"rgba(255,255,255,0.08)":"linear-gradient(135deg,#00cc88,#00e5a0)", color:cargando||seleccion.size===0?"#475569":"#000", border:"none", borderRadius:6, padding:"9px 24px", cursor:cargando||seleccion.size===0?"not-allowed":"pointer", fontSize:13, fontWeight:700, display:"flex", alignItems:"center", gap:8 }}>
               {cargando ? <><span style={{animation:"spin 1s linear infinite",display:"inline-block"}}>⚙</span> Consultando...</> : `📥 Descargar ${seleccion.size} facturas →`}
             </button>
           )}
 
           {paso==="descarga" && cargando && (
-            <button disabled style={{ background:"#1e2235", color:"#475569", border:"none", borderRadius:6, padding:"9px 24px", fontSize:13, fontWeight:700, display:"flex", alignItems:"center", gap:8 }}>
+            <button disabled style={{ background:"rgba(255,255,255,0.08)", color:"#475569", border:"none", borderRadius:6, padding:"9px 24px", fontSize:13, fontWeight:700, display:"flex", alignItems:"center", gap:8 }}>
               <span style={{animation:"spin 1s linear infinite",display:"inline-block"}}>⚙</span>
               Descargando {progreso.actual}/{progreso.total}...
             </button>
@@ -765,7 +765,7 @@ export default function ModalDescargaDIAN({ empresaActual, onClose, onXmlsDescar
             </button>
             {/* Descargar PDFs */}
             <button onClick={descargarPDFs} disabled={descargandoPDF}
-              style={{ background:descargandoPDF?"#1e2235":"#1e3a5f", color:descargandoPDF?"#475569":"#60a5fa", border:"1px solid rgba(96,165,250,.3)", borderRadius:6, padding:"9px 16px", cursor:descargandoPDF?"not-allowed":"pointer", fontSize:13, fontWeight:700 }}>
+              style={{ background:descargandoPDF?"rgba(255,255,255,0.08)":"#1e3a5f", color:descargandoPDF?"#475569":"#60a5fa", border:"1px solid rgba(96,165,250,.3)", borderRadius:6, padding:"9px 16px", cursor:descargandoPDF?"not-allowed":"pointer", fontSize:13, fontWeight:700 }}>
               {descargandoPDF ? `⏳ ${progresoDesc.actual}/${progresoDesc.total}...` : "📄 PDFs"}
             </button>
             {/* Reintentar fallidas */}
