@@ -404,7 +404,7 @@ function FacturaCard({ f, idx, docNum, onUpdate, onAprender }) {
         <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
           <button onClick={() => setExpandido(e => !e)} style={{ background: "transparent", border: "1px solid #2d3352", color: "#94a3b8", borderRadius: 6, padding: "3px 10px", cursor: "pointer", fontSize: 11 }}>{expandido ? "▲" : "▼ Asiento"}</button>
           {f.enviado && (<button onClick={() => { if(confirm("¿Eliminar esta factura?")) onUpdate(f.id, "_eliminar", true); }} style={{ background: "transparent", border: "1px solid #3b1f1f", color: "#f87171", borderRadius: 6, padding: "3px 10px", cursor: "pointer", fontSize: 11 }}>🗑</button>)}
-          <button onClick={() => { if (!cuadra) { alert("El asiento está descuadrado. Revisa antes de aprobar."); return; } onUpdate(f.id, "asiento", filas); const nuevoEstado = !f.aprobado; onUpdate(f.id, "aprobado", nuevoEstado); if (nuevoEstado) { const registro = { empresa_nit: f.empresa?.nit || "", archivo: f.archivo || "", prefijo: f.prefijo || "", fecha: f.fecha || "", nit_proveedor: f.nitProveedor || "", razon_social: f.razonSocial || "", subtotal: f.subtotal || 0, iva: f.totalIva || 0, total: f.total || 0, retefuente: f.retefuente || 0, retica: f.retica || 0, tratamiento: f.tratamiento || "", concepto: f.ia?.concepto_general || "", asiento: filas, aprobado: true, fecha_carga: new Date().toISOString() }; sbUpsert("dian_facturas", registro).catch(() => {}); } }} style={{ background: f.aprobado ? "#14532d" : "#4f7cff", color: f.aprobado ? "#86efac" : "#fff", border: "none", borderRadius: 6, padding: "3px 14px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>{f.aprobado ? "✓ Aprobado" : "Aprobar"}</button>
+          <button onClick={() => { if (!cuadra) { alert("El asiento está descuadrado. Revisa antes de aprobar."); return; } onUpdate(f.id, "asiento", filas); const nuevoEstado = !f.aprobado; onUpdate(f.id, "aprobado", nuevoEstado); if (nuevoEstado) { const registro = { empresa_nit: f.empresa?.nit || "", archivo: f.archivo || "", prefijo: f.prefijo || "", fecha: f.fecha || "", nit_proveedor: f.nitProveedor || "", razon_social: f.razonSocial || "", subtotal: f.subtotal || 0, iva: f.totalIva || 0, total: f.total || 0, retefuente: f.retefuente || 0, retica: f.retica || 0, tratamiento: f.tratamiento || "", concepto: f.ia?.concepto_general || "", asiento: filas, aprobado: true, fecha_carga: new Date().toISOString() }; sbUpsert("dian_facturas", registro).catch(() => {}); } }} style={{ background: f.aprobado ? "#14532d" : "#c9a84c", color: f.aprobado ? "#86efac" : "#0f1f3d", border: "none", borderRadius: 6, padding: "3px 14px", cursor: "pointer", fontSize: 11, fontWeight: 700 }}>{f.aprobado ? "✓ Aprobado" : "Aprobar"}</button>
         </div>
       </div>
       {(!f.razonSocial || !f.asiento || f.asiento.length === 0) && (<div style={{ margin: "8px 16px", background: "rgba(251,191,36,.08)", border: "1px solid rgba(251,191,36,.2)", borderRadius: 8, padding: "10px 14px", display: "flex", alignItems: "center", gap: 10 }}><span style={{ fontSize: 12, color: "#fbbf24" }}>⚠ Factura sin procesar</span><button onClick={() => { onUpdate(f.id, "_reprocesar", true); }} style={{ background: "rgba(251,191,36,.15)", color: "#fbbf24", border: "1px solid rgba(251,191,36,.3)", borderRadius: 6, padding: "4px 12px", cursor: "pointer", fontSize: 11, fontFamily: "inherit", fontWeight: 600, flexShrink: 0 }}>🔄 Eliminar y volver a subir</button></div>)}
@@ -747,7 +747,7 @@ export default function App() {
   const fmt = n => `$${Number(n || 0).toLocaleString("es-CO")}`;
 
   return (
-    <div style={{ fontFamily: "monospace", background: "#0f1117", color: "#e2e8f0", display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden" }}>
+    <div style={{ fontFamily: "'Inter',system-ui,sans-serif", background: "#0f1f3d", color: "#e8eaf0", display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden" }}>
       <style>{`*{box-sizing:border-box} ::-webkit-scrollbar{width:10px;height:10px} ::-webkit-scrollbar-track{background:#0d101a;border-radius:6px} ::-webkit-scrollbar-thumb{background:#3a3f5c;border-radius:6px;border:2px solid #0d101a} ::-webkit-scrollbar-thumb:hover{background:#4f7cff} .dz{border:2px dashed #2d3352;border-radius:14px;padding:44px 24px;text-align:center;transition:all .2s;cursor:pointer} .dz:hover,.dz.over{border-color:#4f7cff;background:rgba(79,124,255,.05)} @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}`}</style>
 
       {modal && <ModalTratamiento archivos={modal.archivos} empresaActual={empresaActual} empresas={empresas} onEmpresa={setEmpresaActual} onConfirm={confirmarTratamiento} onCancel={() => setModal(null)} />}
@@ -786,10 +786,12 @@ export default function App() {
       )}
 
       {/* NAVBAR */}
-      <div style={{ background: "#0d101a", borderBottom: "1px solid #1e2235", padding: "10px 20px", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", flexShrink: 0 }}>
+      <div style={{ background: "#0d1a33", borderBottom: "1px solid rgba(255,255,255,0.08)", padding: "10px 20px", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", flexShrink: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ width: 30, height: 30, background: "linear-gradient(135deg,#4f7cff,#8b5cf6)", borderRadius: 7, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15 }}>⚡</div>
-          <div><div style={{ fontFamily: "sans-serif", fontWeight: 700, fontSize: 13, color: "#fff" }}>ContaIA DIAN</div><div style={{ fontSize: 9, color: "#64748b" }}>Supabase · Reglas DIAN</div></div>
+          <div style={{ width: 34, height: 34, background: "linear-gradient(135deg,#1a3a6e,#2a5298)", borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 4px 16px rgba(79,142,247,0.35)" }}>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#4f8ef7" strokeWidth="2.2" strokeLinecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="16" y2="12"/><line x1="3" y1="18" x2="12" y2="18"/></svg>
+          </div>
+          <div><div style={{ fontFamily: "'Inter',sans-serif", fontWeight: 800, fontSize: 15, color: "#fff", letterSpacing: "-0.3px" }}>Conta<span style={{ color: "#4f8ef7" }}>IA</span></div><div style={{ fontSize: 9, color: "#64748b", letterSpacing: "0.12em", textTransform: "uppercase", marginTop: 1 }}>Contabiliza · Valida · Sincroniza</div></div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1, maxWidth: 360, margin: "0 12px" }}>
           <span style={{ fontSize: 11, color: "#475569" }}>🏢</span>
