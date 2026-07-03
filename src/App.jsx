@@ -748,7 +748,7 @@ export default function App() {
 
   return (
     <div style={{ fontFamily: "'Inter',system-ui,sans-serif", background: "#0f1f3d", color: "#e8eaf0", display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden" }}>
-      <style>{`*{box-sizing:border-box} ::-webkit-scrollbar{width:10px;height:10px} ::-webkit-scrollbar-track{background:#131c2e;border-radius:6px} ::-webkit-scrollbar-thumb{background:#3a3f5c;border-radius:6px;border:2px solid #131c2e} ::-webkit-scrollbar-thumb:hover{background:#4f7cff} .dz{border:2px dashed #2d3352;border-radius:14px;padding:44px 24px;text-align:center;transition:all .2s;cursor:pointer} .dz:hover,.dz.over{border-color:#4f7cff;background:rgba(79,124,255,.05)} @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}`}</style>
+      <style>{`*{box-sizing:border-box} ::-webkit-scrollbar{width:10px;height:10px} ::-webkit-scrollbar-track{background:#131c2e;border-radius:6px} ::-webkit-scrollbar-thumb{background:#3a3f5c;border-radius:6px;border:2px solid #131c2e} ::-webkit-scrollbar-thumb:hover{background:#4f8ef7} .dz{border:2px dashed rgba(79,142,247,.3);border-radius:14px;padding:44px 24px;text-align:center;transition:all .2s;cursor:pointer;background:rgba(79,142,247,.03)} .dz:hover,.dz.over{border-color:#4f8ef7;background:rgba(79,142,247,.08)} @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}`}</style>
 
       {modal && <ModalTratamiento archivos={modal.archivos} empresaActual={empresaActual} empresas={empresas} onEmpresa={setEmpresaActual} onConfirm={confirmarTratamiento} onCancel={() => setModal(null)} />}
 
@@ -823,8 +823,8 @@ export default function App() {
           {(facturas.length > 0 || subidas.length > 0) && (
             <div style={{ display: "flex", gap: 0, borderBottom: "1px solid rgba(255,255,255,0.08)", marginBottom: 12 }}>
               {[["porAprobar","📋 Por aprobar",facturas.filter(f=>!f.aprobado||f.error).length],["aprobadas","✓ Aprobadas",aprobadasAcum.length],["subidas","↗ Enviadas",subidas.length]].map(([id,lbl,cnt]) => (
-                <button key={id} onClick={() => setTabVista(id)} style={{ padding: "8px 16px", border: "none", background: "transparent", cursor: "pointer", fontSize: 12, fontWeight: 500, fontFamily: "monospace", color: tabVista === id ? "#4ade80" : "#475569", borderBottom: tabVista === id ? "2px solid #4ade80" : "2px solid transparent" }}>
-                  {lbl} <span style={{ marginLeft: 4, background: tabVista === id ? "rgba(74,222,128,.15)" : "rgba(255,255,255,.06)", color: tabVista === id ? "#4ade80" : "#475569", borderRadius: 20, padding: "1px 7px", fontSize: 10, fontWeight: 700 }}>{cnt}</span>
+                <button key={id} onClick={() => setTabVista(id)} style={{ padding: "9px 18px", border: "none", background: tabVista === id ? "#1a2035" : "transparent", cursor: "pointer", fontSize: 13, fontWeight: 700, fontFamily: "'Inter',sans-serif", color: tabVista === id ? "#c9a84c" : "#94a3b8", borderRadius: "9px 9px 0 0", borderBottom: tabVista === id ? "2px solid #c9a84c" : "2px solid transparent" }}>
+                  {lbl} <span style={{ marginLeft: 4, background: tabVista === id ? "rgba(79,142,247,.15)" : "rgba(255,255,255,.06)", color: tabVista === id ? "#4f8ef7" : "#475569", borderRadius: 20, padding: "1px 7px", fontSize: 11, fontWeight: 700 }}>{cnt}</span>
                 </button>
               ))}
               {subidas.length > 0 && <button onClick={() => { if(window.confirm("¿Limpiar historial?")) guardarSubidas([]); }} style={{ marginLeft: "auto", background: "transparent", border: "none", color: "#475569", cursor: "pointer", fontSize: 11, fontFamily: "monospace", padding: "8px 12px" }}>🗑 Limpiar</button>}
@@ -872,9 +872,10 @@ export default function App() {
                 )}
               </div>
               <div style={{ marginTop: 22, display: "flex", flexDirection: "column", gap: 16 }}>
-                <div style={{ fontFamily: "sans-serif", fontWeight: 700, fontSize: 14, color: "#fff" }}>
-                  Facturas <span style={{ color: "#4f7cff" }}>({facturas.length})</span>
-                  {empresaActual && <span style={{ fontSize: 11, color: "#64748b", fontWeight: 400, marginLeft: 8 }}>{empresaActual.nombre}</span>}
+                <div style={{ fontFamily: "'Inter',sans-serif", fontWeight: 700, fontSize: 13, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.1em", display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ width: 3, height: 14, borderRadius: 2, background: "#4f8ef7" }}></span>
+                  Facturas <span style={{ color: "#4f8ef7" }}>({facturas.length})</span>
+                  {empresaActual && <span style={{ fontSize: 11, color: "#64748b", fontWeight: 400, marginLeft: 4, textTransform: "none", letterSpacing: 0 }}>{empresaActual.nombre}</span>}
                 </div>
                 {facturas.filter(f => !f.aprobado || f.error).length === 0 && <div style={{ textAlign:"center",padding:40,color:"#475569",fontSize:13 }}>✓ Sin facturas pendientes</div>}
                 {facturas.filter(f => !f.aprobado || f.error).map((f, i) => <FacturaCard key={f.id} f={f} idx={facturas.indexOf(f)} onUpdate={upd} docNum={null} onAprender={() => {}} />)}
