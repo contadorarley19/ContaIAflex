@@ -297,9 +297,19 @@ async function analizarConIA(datos, tratamiento, tratIva, pucCuentas) {
   const itemsTexto = (datos.items || []).map(i => `- ${i.descripcion} | $${i.valor.toLocaleString("es-CO")}`).join("\n") || "(sin ítems)";
   const cuentasIva = pucCuentas.filter(c => { const cod = c.codigo || ""; if (tratIva === "descontable") return cod.startsWith("24"); return cod.startsWith("61") || cod.startsWith("51"); }).filter(c => /iva|impuesto.*venta/i.test(c.nombre)).map(c => `${c.codigo}\t${c.nombre}`).join("\n");
   const prompt = `Contador colombiano. SOLO JSON, sin texto extra.\n\nFACTURA: ${datos.razonSocial} | ${datos.fecha}\nITEMS: ${itemsTexto}\nSUBTOTAL: $${(datos.subtotal||0).toLocaleString("es-CO")} | IVA: $${(datos.totalIva||0).toLocaleString("es-CO")}\nTRATAMIENTO: ${tratamiento === "inventario" ? "INVENTARIO-cuentas 1x" : "GASTO-cuentas 6x/5x"}\n\n⚠ OBLIGATORIO: USA SOLO ESTAS CUENTAS DE LA EMPRESA. PROHIBIDO inventar códigos.\nCUENTAS GASTO/COSTO SUGERIDAS:\n${pucGastos || pucTexto || "(vacío)"}\n\nTODAS LAS CUENTAS DISPONIBLES:\n${pucTexto || "(vacío)"}\n\nIVA (SOLO estas):\n${cuentasIva || "(ninguna)"}\n\ntipo_retencion: compras|servicios|honorarios|transporte|arrend_inmueble|arrend_mueble|obra_civil|vigilancia|combustibles|comisiones|no_aplica\n\nJSON:\n{"concepto_general":"","tipo_retencion":"compras","lineas_contables":[{"descripcion":"","valor":0,"cuenta_codigo":"","cuenta_nombre":""}],"cuenta_iva_codigo":"","cuenta_iva_nombre":"","advertencia":""}`;
-  const data = await callClaude({ model: "claude-sonnet-4-5", max_tokens: 400, messages: [{ role: "user", content: prompt }] });
-  const text = data.content?.map(b => b.text || "").join("").replace(/\`\`\`json|\`\`\`/g, "").trim();
-  return JSON.parse(text);
+  const data = await callClaude({ model: "claude-sonnet-4-5", max_tokens: 1500, messages: [{ role: "user", content: prompt }] });
+  let text = data.content?.map(b => b.text || "").join("").replace(/\`\`\`json|\`\`\`/g, "").trim();
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    // Rescate: extraer el objeto JSON entre la primera { y la última }
+    const ini = text.indexOf("{");
+    const fin = text.lastIndexOf("}");
+    if (ini >= 0 && fin > ini) {
+      try { return JSON.parse(text.slice(ini, fin + 1)); } catch (e2) {}
+    }
+    throw new Error("La IA devolvió una respuesta incompleta. Usa Reintentar.");
+  }
 }
 
 function construirAsiento(datos, ia, rete, pucCuentas, esAutorretenedor, tratIva) {
@@ -706,10 +716,12 @@ export default function App() {
       setProgreso({ actual: i + 1, total: archivos.length });
       const placeholderId = placeholders[i].id;
       await (async (archivo) => {
+        let xmlGuardado = null;
         try {
           let datos = {};
           if (archivo.name.toLowerCase().endsWith(".xml")) {
             const xmlText = await archivo.text();
+            xmlGuardado = xmlText;
             const datosPreview = parseXML(xmlText) || {};
             if (datosPreview.prefijo && datosPreview.nitProveedor) {
               const nit_prev = (datosPreview.nitProveedor||"").replace(/[^0-9]/g,"");
@@ -730,7 +742,7 @@ export default function App() {
           try { const tercero = extraerTercero(datos, persona, esAutoRet, empresaActual?.id); if (tercero) { Promise.race([upsertTerceroSB(tercero), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000))]).catch(() => {}); } } catch(e) {}
           const asiento = construirAsiento(datos, ia, rete, pucCuentas, esAutoRet, tratIva);
           setFacturas(prev => prev.map(f => f.id === placeholderId ? { ...f, procesando: false, empresa: empresaActual, ...datos, xmlOriginal: datos._xmlOriginal || null, nit, persona, ia, rete, reteInfo: rete, retefuente: rete.valor, esAutorretenedor: esAutoRet, aprobado: false, asiento } : f));
-        } catch (e) { setFacturas(prev => prev.map(f => f.id === placeholderId ? { ...f, procesando: false, error: e.message || "Error procesando", xmlOriginal: (typeof datos !== "undefined" && datos?._xmlOriginal) || null } : f)); }
+        } catch (e) { setFacturas(prev => prev.map(f => f.id === placeholderId ? { ...f, procesando: false, error: e.message || "Error procesando", xmlOriginal: xmlGuardado || (typeof datos !== "undefined" && datos?._xmlOriginal) || null } : f)); }
       })(archivos[i]);
       if (i < archivos.length - 1) { const pausa = (i + 1) % LOTE === 0 ? 8000 : 3000; await sleep(pausa); }
     }
