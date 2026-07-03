@@ -313,15 +313,27 @@ async function analizarConIA(datos, tratamiento, tratIva, pucCuentas) {
 }
 
 function construirAsiento(datos, ia, rete, pucCuentas, esAutorretenedor, tratIva) {
-  const filas = [];
+  const filasBase = [];
+  let filas = filasBase;
   let totalDeb = 0;
   const resolverAuxiliar = (cod) => {
     if (!cod) return { cod: "", advertencia: true };
     const codStr = String(cod);
+    // Buscar hijos (cuentas auxiliares más profundas que empiezan con este código)
+    const hijos = pucCuentas.filter(p => String(p.codigo).startsWith(codStr) && String(p.codigo).length > codStr.length);
+    if (hijos.length > 0) {
+      // Preferir el nivel auxiliar más profundo. Si hay uno solo, usarlo; si varios, el de mayor longitud.
+      const masProfundo = hijos.reduce((a, b) => String(b.codigo).length > String(a.codigo).length ? b : a);
+      // Solo bajar automáticamente si hay UN único auxiliar (evita elegir mal entre varios)
+      const auxiliares = hijos.filter(h => String(h.codigo).length === String(masProfundo.codigo).length);
+      if (auxiliares.length === 1) return { cod: String(auxiliares[0].codigo), advertencia: false };
+    }
+    // Si el código existe exacto y no había un único hijo claro, usarlo
     const exacto = pucCuentas.find(p => String(p.codigo) === codStr);
     if (exacto) return { cod: codStr, advertencia: false };
-    const hijo = pucCuentas.find(p => String(p.codigo).startsWith(codStr) && String(p.codigo).length > codStr.length);
-    if (hijo) return { cod: String(hijo.codigo), advertencia: false };
+    // Si hay hijos pero varios, tomar el primero (mejor que nada)
+    if (hijos.length > 0) return { cod: String(hijos[0].codigo), advertencia: false };
+    // Subir al padre si no se encuentra
     for (let len = codStr.length - 1; len >= 4; len--) { const prefijo = codStr.slice(0, len); const padre = pucCuentas.find(p => String(p.codigo).startsWith(prefijo)); if (padre) return { cod: String(padre.codigo), advertencia: false }; }
     return { cod: codStr, advertencia: true };
   };
@@ -337,7 +349,25 @@ function construirAsiento(datos, ia, rete, pucCuentas, esAutorretenedor, tratIva
     filas.push({ id: `lc${i}`, tipo: "debito", cuenta: aux.cod, descripcion: l.descripcion || ia.concepto_general, valor: val, editable: true, eliminable: true, advertencia: aux.advertencia });
     totalDeb += val;
   });
-  if (filas.length === 0) { filas.push({ id: "lc0", tipo: "debito", cuenta: "", descripcion: ia.concepto_general || "Gasto / Costo", valor: datos.subtotal || 0, editable: true, eliminable: true, advertencia: true }); totalDeb = datos.subtotal || 0; }
+  // Agrupar líneas de débito que van a la MISMA cuenta auxiliar en una sola
+  const agrupadas = {};
+  const otras = [];
+  filas.forEach(f => {
+    if (f.tipo === "debito" && f.cuenta && f.id.startsWith("lc")) {
+      if (agrupadas[f.cuenta]) {
+        agrupadas[f.cuenta].valor += f.valor;
+        // combinar descripciones si son distintas y cortas
+        if (agrupadas[f.cuenta].descripcion !== f.descripcion && agrupadas[f.cuenta].descripcion.length < 60) {
+          agrupadas[f.cuenta].descripcion = ia.concepto_general || agrupadas[f.cuenta].descripcion;
+        }
+      } else {
+        agrupadas[f.cuenta] = { ...f };
+      }
+    } else {
+      otras.push(f);
+    }
+  });
+  filas = [...Object.values(agrupadas), ...otras];
   if ((datos.totalIva || 0) > 0 && ia.cuenta_iva_codigo) { const auxIva = resolverAuxiliar(ia.cuenta_iva_codigo); filas.push({ id: "iva", tipo: "debito", cuenta: auxIva.cod, descripcion: ia.cuenta_iva_nombre || "IVA", valor: datos.totalIva, editable: true, eliminable: true, advertencia: auxIva.advertencia }); totalDeb += datos.totalIva; }
   let totalCre = 0;
   if (!esAutorretenedor && rete.valor > 0 && rete.cuenta) { const auxRete = resolverAuxiliar(rete.cuenta.codigo); filas.push({ id: "rete", tipo: "credito", cuenta: auxRete.cod, descripcion: `ReteFuente ${rete.pct}% — ${ia.tipo_retencion}`, valor: rete.valor, editable: true, eliminable: true, advertencia: auxRete.advertencia }); totalCre += rete.valor; }
